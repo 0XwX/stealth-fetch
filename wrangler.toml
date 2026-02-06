@@ -1,0 +1,17 @@
+name = "stealth-fetch-test"
+main = "examples/worker.ts"
+compatibility_date = "2024-10-22"
+compatibility_flags = ["nodejs_compat"]
+
+[[rules]]
+type = "CompiledWasm"
+globs = ["**/*.wasm"]
+
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true

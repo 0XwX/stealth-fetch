@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Coverage
+coverage/
+*.lcov
+
+# Rust build artifacts
+**/target/
+src/socket/wasm-pkg/
+
+# Wrangler
+.wrangler/
+.dev.vars
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Cache
+.eslintcache
+
+# Package
+*.tgz

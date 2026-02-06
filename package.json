@@ -1,0 +1,87 @@
+{
+  "name": "stealth-fetch",
+  "version": "0.1.0",
+  "description": "HTTP/1.1 + HTTP/2 client for Cloudflare Workers via cloudflare:sockets, bypassing cf-* header injection",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "workerd": "./dist/index.js",
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "scripts": {
+    "build:wasm": "bash scripts/build-wasm.sh",
+    "dev": "wrangler dev",
+    "build": "tsup && bash scripts/copy-wasm.sh",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "lint": "eslint src/ test/ examples/",
+    "lint:fix": "eslint src/ test/ examples/ --fix",
+    "lint:commit": "commitlint --from=HEAD~1",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\" \"examples/**/*.ts\" \"*.json\" \"*.ts\" \"*.js\" \"*.md\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\" \"examples/**/*.ts\" \"*.json\" \"*.ts\" \"*.js\" \"*.md\"",
+    "type-check": "tsc --noEmit",
+    "prepublishOnly": "npm run type-check && npm run test:run && npm run build",
+    "prepare": "husky"
+  },
+  "dependencies": {
+    "hpack.js": "^2.1.6"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.12.0",
+    "@cloudflare/workers-types": "^4.20241230.0",
+    "@commitlint/cli": "^19.6.0",
+    "@commitlint/config-conventional": "^19.6.0",
+    "@types/node": "^25.2.1",
+    "eslint": "^9.0.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-jsdoc": "^62.5.3",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.2.7",
+    "prettier": "^3.0.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.54.0",
+    "vitest": "^3.0.0",
+    "wrangler": "^4.0.0"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "keywords": [
+    "cloudflare-workers",
+    "http2",
+    "h2",
+    "http-client",
+    "wasm",
+    "tls",
+    "alpn",
+    "cloudflare-sockets",
+    "stealth-fetch",
+    "no-cf-headers"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/0XwX/stealth-fetch.git"
+  },
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "lint-staged": {
+    "*.ts": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,md,yml,yaml,js}": [
+      "prettier --write"
+    ]
+  }
+}

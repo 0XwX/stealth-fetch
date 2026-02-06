@@ -1,0 +1,7 @@
+dist/
+coverage/
+node_modules/
+.wrangler/
+src/socket/wasm-pkg/
+*.wasm
+package-lock.json
