@@ -1111,14 +1111,30 @@ export function normalizeHeaders(
   headers?: Record<string, string> | Headers,
 ): Record<string, string> {
   if (!headers) return {};
-  if (headers instanceof Headers) {
-    const obj: Record<string, string> = {};
-    headers.forEach((value, key) => {
-      obj[key] = value;
-    });
-    return obj;
+  const result: Record<string, string> = {};
+  const entries = headers instanceof Headers ? headers.entries() : Object.entries(headers);
+  for (const [key, value] of entries) {
+    const lk = key.toLowerCase();
+    // Strip Cloudflare-injected, proxy, and hop-by-hop headers
+    // so they are never forwarded upstream.
+    if (
+      lk.startsWith("cf-") ||
+      lk.startsWith("x-forwarded-") ||
+      lk === "x-real-ip" ||
+      lk === "true-client-ip" ||
+      lk === "cdn-loop" ||
+      lk === "host" ||
+      lk === "connection" ||
+      lk === "transfer-encoding" ||
+      lk === "keep-alive" ||
+      lk === "accept-encoding" ||
+      lk === "content-length"
+    ) {
+      continue;
+    }
+    result[lk] = value;
   }
-  return { ...headers };
+  return result;
 }
 
 /**
