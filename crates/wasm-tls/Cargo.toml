@@ -1,0 +1,36 @@
+[package]
+name = "wasm-tls"
+version = "0.1.0"
+edition = "2021"
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+
+# rustls: 禁用默认 features (去掉 ring/aws-lc-rs)
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "logging"] }
+
+# 启用 pki-types 的 web feature, 在 wasm32 上用 web-time 替代 SystemTime
+rustls-pki-types = { version = "1", features = ["web"] }
+
+# 纯 Rust 密码学 provider (可编译到 wasm32)
+rustls-rustcrypto = "0.0.2-alpha"
+
+# 内嵌 Mozilla 根证书 (wasm 无法访问系统证书)
+webpki-roots = "1.0"
+
+# 随机数: 通过 Web Crypto API
+getrandom = { version = "0.3", features = ["wasm_js"] }
+# getrandom v0.2 被间接依赖拉入 (curve25519-dalek 等), 需要 js feature
+getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+codegen-units = 1
