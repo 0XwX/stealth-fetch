@@ -62,6 +62,11 @@ export interface RequestOptions {
   decompress?: boolean;
   /** Compress request body with gzip (Uint8Array > 1KB only). Default: false */
   compressBody?: boolean;
+  /**
+   * Connection strategy: 'compat' (default) uses ALPN negotiation + protocol cache;
+   *  'fast-h1' uses platform TLS for non-CF, WASM TLS h1-only for CF (faster, no h2).
+   */
+  strategy?: "compat" | "fast-h1";
 }
 
 /** Internal options after normalization (headers is always Record, body is separate) */
@@ -245,6 +250,7 @@ async function doRequest(
   const redirect = options.redirect ?? "follow";
   const maxRedirects = options.maxRedirects ?? 5;
   const protocol = options.protocol ?? "auto";
+  const strategy = options.strategy ?? "compat";
 
   let currentUrl = url;
   let currentMethod = options.method ?? "GET";
@@ -265,10 +271,10 @@ async function doRequest(
 
   while (true) {
     throwIfAborted(signal);
-    preloadHpack();
-    if (protocol !== "http/1.1") {
-      preloadWasmTls();
-    }
+    // Preload WASM TLS for any protocol that may need it (including fast-h1 fallback)
+    if (protocol !== "http/1.1") preloadWasmTls();
+    // Preload HPACK only when h2 is possible (compat strategy or explicit h2)
+    if (protocol === "h2" || (protocol === "auto" && strategy !== "fast-h1")) preloadHpack();
 
     const parsed = parseUrl(currentUrl);
     let body = normalizeBody(currentBody);
@@ -301,7 +307,7 @@ async function doRequest(
     } else if (protocol === "http/1.1") {
       response = await http11Request(parsed, reqOptions, body, signal);
     } else {
-      response = await autoRequest(parsed, reqOptions, body, signal);
+      response = await autoRequest(parsed, reqOptions, body, signal, strategy);
     }
 
     // Not a redirect or manual mode — return as-is
@@ -391,6 +397,9 @@ const NAT64_PREFIX_COUNT = 3;
 /** Per-prefix timeout for NAT64 connection attempts (ms) */
 const NAT64_PER_PREFIX_TIMEOUT = 1000;
 
+/** Timeout for WASM TLS ALPN handshake on first connection to non-CF targets (ms) */
+const WASM_TLS_HANDSHAKE_TIMEOUT = 2000;
+
 /**
  * Generate NAT64 connect hostnames for the given target (pure computation, no I/O).
  * cloudflare:sockets connect() is optimistic (returns before TCP handshake completes),
@@ -422,6 +431,7 @@ async function autoRequest(
   options: NormalizedOptions,
   body: Uint8Array | ReadableStream<Uint8Array> | null,
   signal: AbortSignal,
+  strategy: "compat" | "fast-h1" = "compat",
 ): Promise<HttpResponse> {
   // For plain HTTP, always use HTTP/1.1
   if (parsed.protocol !== "https") {
@@ -432,13 +442,28 @@ async function autoRequest(
   throwIfAborted(signal);
   const cfCheck = await resolveAndCheckCloudflareCached(parsed.hostname);
   console.debug(
-    `[autoRequest] ${parsed.hostname} isCf=${cfCheck.isCf} ipv4=${cfCheck.ipv4} dnsMs=${cfCheck.dnsMs}`,
+    `[autoRequest] ${parsed.hostname} isCf=${cfCheck.isCf} ipv4=${cfCheck.ipv4} dnsMs=${cfCheck.dnsMs} strategy=${strategy}`,
   );
+
+  if (strategy === "fast-h1") {
+    return autoRequestFastH1(parsed, options, body, signal, cfCheck);
+  }
+  return autoRequestCompat(parsed, options, body, signal, cfCheck);
+}
+
+/** compat strategy: ALPN negotiation + protocol cache (original behavior) */
+async function autoRequestCompat(
+  parsed: ParsedUrl,
+  options: NormalizedOptions,
+  body: Uint8Array | ReadableStream<Uint8Array> | null,
+  signal: AbortSignal,
+  cfCheck: CfCheckResult,
+): Promise<HttpResponse> {
+  const isStreamBody = body instanceof ReadableStream;
 
   if (cfCheck.isCf && cfCheck.ipv4) {
     // Target is behind CF CDN — direct connect will fail ("TCP Loop detected").
-    // Try NAT64 prefixes with full TLS+HTTP requests, each with a short timeout
-    // to avoid one stalled prefix blocking the entire request.
+    // Try NAT64 prefixes with full TLS+HTTP requests, each with a short timeout.
     const candidates = getNat64Candidates(cfCheck.ipv4);
     for (let i = 0; i < candidates.length; i++) {
       throwIfAborted(signal);
@@ -448,7 +473,9 @@ async function autoRequest(
         AbortSignal.timeout(NAT64_PER_PREFIX_TIMEOUT),
       ]);
       try {
-        console.debug(`[autoRequest] ${parsed.hostname} trying NAT64[${i}]: ${candidates[i]}`);
+        console.debug(
+          `[autoRequest:compat] ${parsed.hostname} trying NAT64[${i}]: ${candidates[i]}`,
+        );
         const result = await autoRequestWithSocket(
           parsed,
           options,
@@ -456,15 +483,19 @@ async function autoRequest(
           perPrefixSignal,
           candidates[i],
         );
-        console.debug(`[autoRequest] ${parsed.hostname} NAT64[${i}] OK in ${Date.now() - t0}ms`);
+        console.debug(
+          `[autoRequest:compat] ${parsed.hostname} NAT64[${i}] OK in ${Date.now() - t0}ms`,
+        );
         return result;
       } catch (err) {
         const ms = Date.now() - t0;
         const msg = err instanceof Error ? err.message : String(err);
-        console.debug(`[autoRequest] ${parsed.hostname} NAT64[${i}] failed in ${ms}ms: ${msg}`);
-        // If the outer signal was aborted, propagate immediately
+        console.debug(
+          `[autoRequest:compat] ${parsed.hostname} NAT64[${i}] failed in ${ms}ms: ${msg}`,
+        );
         if (signal.aborted) throw err;
-        if (i === candidates.length - 1) {
+        // ReadableStream body may have been consumed — cannot retry
+        if (isStreamBody || i === candidates.length - 1) {
           throw new Error(
             `All ${candidates.length} NAT64 prefixes failed for ${parsed.hostname}:${parsed.port}. Last error: ${msg}`,
           );
@@ -473,7 +504,7 @@ async function autoRequest(
     }
   }
 
-  // Non-CF target — standard connection path
+  // Non-CF target — use protocol cache to skip ALPN on repeat visits
   const cached = getCachedProtocol(parsed.hostname, parsed.port);
 
   if (cached === "h2") {
@@ -481,18 +512,41 @@ async function autoRequest(
       return await h2RequestWithConnect(parsed, options, body, true, signal);
     } catch (err) {
       if (!isCloudflareNetworkError(err)) throw err;
+      // ReadableStream body may have been consumed — skip NAT64 fallback
+      if (isStreamBody) throw err;
     }
   } else if (cached === "http/1.1") {
     try {
       return await http11RequestWithConnect(parsed, options, body, true, signal);
     } catch (err) {
       if (!isCloudflareNetworkError(err)) throw err;
+      if (isStreamBody) throw err;
     }
   } else {
+    // No protocol cache — try WASM TLS ALPN with a short handshake timeout.
+    // If WASM TLS hangs (incompatible server), fall back to platform TLS h1.
+    const wasmAlpnSignal = AbortSignal.any([
+      signal,
+      AbortSignal.timeout(WASM_TLS_HANDSHAKE_TIMEOUT),
+    ]);
     try {
-      return await autoRequestWithSocket(parsed, options, body, signal);
+      return await autoRequestWithSocket(parsed, options, body, wasmAlpnSignal);
     } catch (err) {
-      if (!isCloudflareNetworkError(err)) throw err;
+      // If the outer request signal was aborted, propagate immediately
+      if (signal.aborted) throw err;
+      // WASM TLS timed out or failed — try platform TLS h1
+      if (isStreamBody) throw err;
+      console.debug(
+        `[autoRequest:compat] ${parsed.hostname} WASM TLS ALPN failed, falling back to platform TLS h1: ${err instanceof Error ? err.message : err}`,
+      );
+      try {
+        const result = await http11RequestWithConnect(parsed, options, body, true, signal);
+        setCachedProtocol(parsed.hostname, parsed.port, "http/1.1");
+        return result;
+      } catch (platformErr) {
+        if (!isCloudflareNetworkError(platformErr)) throw platformErr;
+        if (isStreamBody) throw platformErr;
+      }
     }
   }
 
@@ -515,15 +569,140 @@ async function autoRequest(
       return await autoRequestWithSocket(parsed, options, body, perPrefixSignal, candidates[i]);
     } catch (err) {
       if (signal.aborted) throw err;
-      if (i === candidates.length - 1) {
+      // ReadableStream body may have been consumed — cannot retry
+      if (isStreamBody || i === candidates.length - 1) {
         throw new Error(
           `Connection blocked and all NAT64 prefixes failed for ${parsed.hostname}:${parsed.port}`,
         );
       }
     }
   }
-  // Unreachable, but TypeScript needs it
   throw new Error(`NAT64 fallback failed for ${parsed.hostname}:${parsed.port}`);
+}
+
+/** fast-h1 strategy: platform TLS for non-CF, WASM TLS h1-only for CF */
+async function autoRequestFastH1(
+  parsed: ParsedUrl,
+  options: NormalizedOptions,
+  body: Uint8Array | ReadableStream<Uint8Array> | null,
+  signal: AbortSignal,
+  cfCheck: CfCheckResult,
+): Promise<HttpResponse> {
+  const isStreamBody = body instanceof ReadableStream;
+
+  if (cfCheck.isCf && cfCheck.ipv4) {
+    // Target is behind CF CDN — NAT64 + WASM TLS h1-only
+    const candidates = getNat64Candidates(cfCheck.ipv4);
+    for (let i = 0; i < candidates.length; i++) {
+      throwIfAborted(signal);
+      const t0 = Date.now();
+      const perPrefixSignal = AbortSignal.any([
+        signal,
+        AbortSignal.timeout(NAT64_PER_PREFIX_TIMEOUT),
+      ]);
+      try {
+        console.debug(
+          `[autoRequest:fast-h1] ${parsed.hostname} trying NAT64[${i}]: ${candidates[i]}`,
+        );
+        const result = await http11RequestWithWasmTLS(
+          parsed,
+          options,
+          body,
+          perPrefixSignal,
+          candidates[i],
+        );
+        console.debug(
+          `[autoRequest:fast-h1] ${parsed.hostname} NAT64[${i}] OK in ${Date.now() - t0}ms`,
+        );
+        return result;
+      } catch (err) {
+        const ms = Date.now() - t0;
+        const msg = err instanceof Error ? err.message : String(err);
+        console.debug(
+          `[autoRequest:fast-h1] ${parsed.hostname} NAT64[${i}] failed in ${ms}ms: ${msg}`,
+        );
+        if (signal.aborted) throw err;
+        // ReadableStream body may have been consumed — cannot retry
+        if (isStreamBody || i === candidates.length - 1) {
+          throw new Error(
+            `All ${candidates.length} NAT64 prefixes failed for ${parsed.hostname}:${parsed.port}. Last error: ${msg}`,
+          );
+        }
+      }
+    }
+  }
+
+  // Non-CF target — platform TLS (secureTransport: "on") for speed
+  try {
+    return await http11RequestWithConnect(parsed, options, body, true, signal);
+  } catch (err) {
+    // ReadableStream body may have been consumed — skip fallback
+    if (isStreamBody) throw err;
+    // Fallback to WASM TLS h1 on recoverable platform TLS failures
+    if (shouldFallbackToWasmTls(err, signal)) {
+      console.debug(
+        `[autoRequest:fast-h1] ${parsed.hostname} platform TLS failed, falling back to WASM TLS: ${err instanceof Error ? err.message : err}`,
+      );
+      try {
+        return await http11RequestWithWasmTLS(parsed, options, body, signal, parsed.hostname);
+      } catch (wasmErr) {
+        // If WASM also fails with a CF network error, fall through to NAT64
+        if (!isCloudflareNetworkError(wasmErr)) {
+          const origMsg = err instanceof Error ? err.message : String(err);
+          const wasmMsg = wasmErr instanceof Error ? wasmErr.message : String(wasmErr);
+          throw new Error(`Platform TLS failed: ${origMsg}; WASM fallback also failed: ${wasmMsg}`);
+        }
+      }
+    }
+    if (!isCloudflareNetworkError(err)) throw err;
+  }
+
+  // Direct connection blocked but not detected as CF — try NAT64 as last resort
+  throwIfAborted(signal);
+  const ipv4 = await resolveNat64IPv4(parsed.hostname, cfCheck.ipv4);
+  if (!ipv4) {
+    throw new Error(
+      `Connection blocked and DNS resolution failed for ${parsed.hostname}:${parsed.port}`,
+    );
+  }
+  const candidates = getNat64Candidates(ipv4);
+  for (let i = 0; i < candidates.length; i++) {
+    throwIfAborted(signal);
+    const perPrefixSignal = AbortSignal.any([
+      signal,
+      AbortSignal.timeout(NAT64_PER_PREFIX_TIMEOUT),
+    ]);
+    try {
+      return await http11RequestWithWasmTLS(parsed, options, body, perPrefixSignal, candidates[i]);
+    } catch (err) {
+      if (signal.aborted) throw err;
+      // ReadableStream body may have been consumed — cannot retry
+      if (isStreamBody || i === candidates.length - 1) {
+        throw new Error(
+          `Connection blocked and all NAT64 prefixes failed for ${parsed.hostname}:${parsed.port}`,
+        );
+      }
+    }
+  }
+  throw new Error(`NAT64 fallback failed for ${parsed.hostname}:${parsed.port}`);
+}
+
+/**
+ * Determine if a platform TLS error should trigger fallback to WASM TLS.
+ *  Excludes user/request-level timeouts (signal already aborted).
+ */
+function shouldFallbackToWasmTls(err: unknown, signal: AbortSignal): boolean {
+  // If the request-level signal is already aborted, this is a user or
+  // doRequest timeout — no point retrying with WASM TLS.
+  if (signal.aborted) return false;
+  if (!(err instanceof Error)) return false;
+  const msg = err.message;
+  return (
+    msg.includes("Stream was cancelled") ||
+    msg.includes("connection refused") ||
+    msg.includes("network connection lost") ||
+    isCloudflareNetworkError(err)
+  );
 }
 
 /**

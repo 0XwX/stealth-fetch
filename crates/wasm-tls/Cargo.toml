@@ -29,8 +29,11 @@ getrandom = { version = "0.3", features = ["wasm_js"] }
 # getrandom v0.2 被间接依赖拉入 (curve25519-dalek 等), 需要 js feature
 getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }
 
+# 体积优先: "z" 比 "s" 更激进地缩减 wasm 体积, 密码学性能损失在网络 RTT 下可忽略
+# panic=abort 移除 unwind 代码 (本 crate 所有失败路径均通过 Result 返回, 无 panic)
 [profile.release]
-opt-level = "s"
+opt-level = "z"
 lto = true
 strip = true
 codegen-units = 1
+panic = "abort"

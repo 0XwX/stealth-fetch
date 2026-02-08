@@ -70,20 +70,21 @@ Returns `Promise<HttpResponse>`.
 
 **Options**
 
-| Option           | Type                                                         | Default    | Description                                                                   |
-| ---------------- | ------------------------------------------------------------ | ---------- | ----------------------------------------------------------------------------- |
-| `method`         | `string`                                                     | `'GET'`    | HTTP method                                                                   |
-| `headers`        | `Record<string, string>`                                     | `{}`       | Request headers                                                               |
-| `body`           | `string \| Uint8Array \| ReadableStream<Uint8Array> \| null` | `null`     | Request body                                                                  |
-| `protocol`       | `'h2' \| 'http/1.1' \| 'auto'`                               | `'auto'`   | Protocol selection                                                            |
-| `timeout`        | `number`                                                     | `30000`    | Overall timeout from call until response headers (includes retries/redirects) |
-| `headersTimeout` | `number`                                                     | —          | Timeout waiting for response headers                                          |
-| `bodyTimeout`    | `number`                                                     | —          | Idle timeout waiting for response body data                                   |
-| `signal`         | `AbortSignal`                                                | —          | Cancellation signal                                                           |
-| `redirect`       | `'follow' \| 'manual'`                                       | `'follow'` | Redirect handling                                                             |
-| `maxRedirects`   | `number`                                                     | `5`        | Max redirects to follow                                                       |
-| `decompress`     | `boolean`                                                    | `true`     | Auto-decompress gzip/deflate responses                                        |
-| `compressBody`   | `boolean`                                                    | `false`    | Gzip-compress request body (Uint8Array > 1KB)                                 |
+| Option           | Type                                                         | Default    | Description                                                                                                            |
+| ---------------- | ------------------------------------------------------------ | ---------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `method`         | `string`                                                     | `'GET'`    | HTTP method                                                                                                            |
+| `headers`        | `Record<string, string>`                                     | `{}`       | Request headers                                                                                                        |
+| `body`           | `string \| Uint8Array \| ReadableStream<Uint8Array> \| null` | `null`     | Request body                                                                                                           |
+| `protocol`       | `'h2' \| 'http/1.1' \| 'auto'`                               | `'auto'`   | Protocol selection                                                                                                     |
+| `timeout`        | `number`                                                     | `30000`    | Overall timeout from call until response headers (includes retries/redirects)                                          |
+| `headersTimeout` | `number`                                                     | —          | Timeout waiting for response headers                                                                                   |
+| `bodyTimeout`    | `number`                                                     | —          | Idle timeout waiting for response body data                                                                            |
+| `signal`         | `AbortSignal`                                                | —          | Cancellation signal                                                                                                    |
+| `redirect`       | `'follow' \| 'manual'`                                       | `'follow'` | Redirect handling                                                                                                      |
+| `maxRedirects`   | `number`                                                     | `5`        | Max redirects to follow                                                                                                |
+| `decompress`     | `boolean`                                                    | `true`     | Auto-decompress gzip/deflate responses                                                                                 |
+| `compressBody`   | `boolean`                                                    | `false`    | Gzip-compress request body (Uint8Array > 1KB)                                                                          |
+| `strategy`       | `'compat' \| 'fast-h1'`                                      | `'compat'` | `compat`: ALPN + protocol cache (h2 supported); `fast-h1`: platform TLS for non-CF, WASM TLS h1 for CF (faster, no h2) |
 
 **Response**
 
