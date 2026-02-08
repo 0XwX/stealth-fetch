@@ -51,6 +51,7 @@ export async function createWasmTLSSocket(
   port: number = 443,
   alpnProtocols: string[] = ["h2", "http/1.1"],
   connectHostname?: string,
+  signal?: AbortSignal,
 ): Promise<WasmTlsSocketAdapter> {
   const socket = new WasmTlsSocketAdapter({
     hostname,
@@ -58,6 +59,6 @@ export async function createWasmTLSSocket(
     alpnProtocols,
     connectHostname,
   });
-  await socket.connect();
+  await socket.connect(signal);
   return socket;
 }

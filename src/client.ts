@@ -124,7 +124,15 @@ export async function preconnect(hostname: string, port: number = 443): Promise<
       try {
         const perPrefixSignal = AbortSignal.timeout(NAT64_PER_PREFIX_TIMEOUT);
         const client = await abortableConnect(
-          () => Http2Client.connect(hostname, port, true, { settingsTimeout: 5000 }, candidates[i]),
+          () =>
+            Http2Client.connect(
+              hostname,
+              port,
+              true,
+              { settingsTimeout: 5000 },
+              candidates[i],
+              perPrefixSignal,
+            ),
           perPrefixSignal,
           c => c.close().catch(() => {}),
         );
@@ -141,9 +149,18 @@ export async function preconnect(hostname: string, port: number = 443): Promise<
 
   // Non-CF target: direct connection
   try {
+    const directSignal = AbortSignal.timeout(5000);
     const client = await abortableConnect(
-      () => Http2Client.connect(hostname, port, true, { settingsTimeout: 5000 }),
-      AbortSignal.timeout(5000),
+      () =>
+        Http2Client.connect(
+          hostname,
+          port,
+          true,
+          { settingsTimeout: 5000 },
+          undefined,
+          directSignal,
+        ),
+      directSignal,
       c => c.close().catch(() => {}),
     );
     poolClient(hostname, port, client);
@@ -757,7 +774,14 @@ async function autoRequestWithSocket(
 ): Promise<HttpResponse> {
   throwIfAborted(signal);
   const wasmSocket = await abortableConnect(
-    () => createWasmTLSSocket(parsed.hostname, parsed.port, ["h2", "http/1.1"], connectHostname),
+    () =>
+      createWasmTLSSocket(
+        parsed.hostname,
+        parsed.port,
+        ["h2", "http/1.1"],
+        connectHostname,
+        signal,
+      ),
     signal,
   );
 
@@ -948,6 +972,7 @@ async function h2RequestWithConnect(
           tls,
           { settingsTimeout: options.timeout ?? 5000 },
           connectHostname,
+          signal,
         ),
       signal,
       c => c.close().catch(() => {}),
@@ -997,6 +1022,7 @@ async function h2RequestWithConnect(
             tls,
             { settingsTimeout: options.timeout ?? 5000 },
             connectHostname,
+            signal,
           ),
         signal,
         c => c.close().catch(() => {}),
@@ -1140,7 +1166,7 @@ async function http11RequestWithWasmTLS(
 ): Promise<HttpResponse> {
   throwIfAborted(signal);
   const wasmSocket = await abortableConnect(
-    () => createWasmTLSSocket(parsed.hostname, parsed.port, ["http/1.1"], connectHostname),
+    () => createWasmTLSSocket(parsed.hostname, parsed.port, ["http/1.1"], connectHostname, signal),
     signal,
   );
 

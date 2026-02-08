@@ -36,8 +36,9 @@ export class WasmTlsSocketAdapter extends Duplex {
 
   /**
    * Establish connection: raw TCP -> WASM TLS handshake -> ready.
+   * @param signal Optional AbortSignal to cancel the handshake (prevents resource leaks on timeout)
    */
-  async connect(): Promise<void> {
+  async connect(signal?: AbortSignal): Promise<void> {
     // 1. Create raw TCP connection (secureTransport: "off")
     // Use connectHostname for TCP (may be NAT64 IPv6), hostname for TLS SNI
     this.rawSocket = new CloudflareSocketAdapter({
@@ -47,11 +48,15 @@ export class WasmTlsSocketAdapter extends Duplex {
     });
     await this.rawSocket.connect();
 
-    // 2. Perform TLS handshake via WASM
-    this.tlsSession = await performTlsHandshake(this.rawSocket, {
-      hostname: this.hostname,
-      alpnProtocols: this.alpnProtocols,
-    });
+    // 2. Perform TLS handshake via WASM (with signal for abort support)
+    this.tlsSession = await performTlsHandshake(
+      this.rawSocket,
+      {
+        hostname: this.hostname,
+        alpnProtocols: this.alpnProtocols,
+      },
+      signal,
+    );
 
     // 3. Wire up callbacks: TLS plaintext -> Duplex readable side
     this.tlsSession.onPlaintext(data => {

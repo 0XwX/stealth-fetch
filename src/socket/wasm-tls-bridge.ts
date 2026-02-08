@@ -61,6 +61,7 @@ export interface WasmTlsSession {
 export async function performTlsHandshake(
   rawSocket: CloudflareSocketAdapter,
   options: WasmTlsOptions,
+  signal?: AbortSignal,
 ): Promise<WasmTlsSession> {
   await ensureWasmInit();
 
@@ -74,8 +75,8 @@ export async function performTlsHandshake(
       await writeToSocket(rawSocket, clientHello);
     }
 
-    // 2. Handshake loop
-    await handshakeLoop(rawSocket, tls);
+    // 2. Handshake loop (with signal for abort support)
+    await handshakeLoop(rawSocket, tls, signal);
   } catch (err) {
     // Free WASM TlsConnection on handshake failure to prevent memory leak
     // (WASM objects are not managed by JS GC)
@@ -89,8 +90,20 @@ export async function performTlsHandshake(
   return createSession(rawSocket, tls, negotiatedAlpn);
 }
 
-async function handshakeLoop(socket: CloudflareSocketAdapter, tls: TlsConnection): Promise<void> {
+async function handshakeLoop(
+  socket: CloudflareSocketAdapter,
+  tls: TlsConnection,
+  signal?: AbortSignal,
+): Promise<void> {
   return new Promise<void>((resolve, reject) => {
+    let settled = false;
+
+    const cleanup = () => {
+      socket.removeListener("data", onData);
+      socket.removeListener("error", onError);
+      signal?.removeEventListener("abort", onAbort);
+    };
+
     const onData = async (chunk: Buffer | Uint8Array) => {
       try {
         const data = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
@@ -104,23 +117,47 @@ async function handshakeLoop(socket: CloudflareSocketAdapter, tls: TlsConnection
         }
 
         if (!tls.is_handshaking()) {
-          socket.removeListener("data", onData);
-          socket.removeListener("error", onError);
-          resolve();
+          if (!settled) {
+            settled = true;
+            cleanup();
+            resolve();
+          }
         }
       } catch (err) {
-        socket.removeListener("data", onData);
-        socket.removeListener("error", onError);
-        reject(err instanceof Error ? err : new Error(String(err)));
+        if (!settled) {
+          settled = true;
+          cleanup();
+          reject(err instanceof Error ? err : new Error(String(err)));
+        }
       }
     };
 
     const onError = (err: Error) => {
-      socket.removeListener("data", onData);
-      socket.removeListener("error", onError);
-      reject(err);
+      if (!settled) {
+        settled = true;
+        cleanup();
+        reject(err);
+      }
     };
 
+    const onAbort = () => {
+      if (!settled) {
+        settled = true;
+        cleanup();
+        socket.destroy();
+        reject(signal!.reason ?? new DOMException("Aborted", "AbortError"));
+      }
+    };
+
+    // Check if already aborted before starting
+    if (signal?.aborted) {
+      settled = true;
+      socket.destroy();
+      reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+      return;
+    }
+
+    signal?.addEventListener("abort", onAbort, { once: true });
     socket.on("data", onData);
     socket.on("error", onError);
   });
