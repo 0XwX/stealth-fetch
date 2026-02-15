@@ -1,0 +1,17 @@
+name = "stealth-fetch-web-test"
+main = "examples/worker-web.ts"
+compatibility_date = "2024-10-22"
+# No nodejs_compat — pure web APIs only
+
+[[rules]]
+type = "CompiledWasm"
+globs = ["**/*.wasm"]
+
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true

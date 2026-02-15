@@ -75,9 +75,7 @@ const TOKEN_RE = /^[a-zA-Z0-9!#$%&'*+.^_`|~-]+$/;
  */
 export function validateMethod(method: string): void {
   if (!TOKEN_RE.test(method)) {
-    throw new Error(
-      `Invalid method: ${JSON.stringify(method)} contains invalid characters`,
-    );
+    throw new Error(`Invalid method: ${JSON.stringify(method)} contains invalid characters`);
   }
 }
 

@@ -9,7 +9,9 @@
  *   GET /single?url=&mode=auto|h1|h2|fetch  → Single request, specified mode
  *   ANY /ai/{provider}/{path}  → AI API proxy via stealth-fetch
  */
-import { request } from "stealth-fetch";
+import { request } from "../src/index.js";
+
+// ── AI Proxy ──
 
 const AI_PROVIDERS: Record<string, string> = {
   openai: "https://api.openai.com",

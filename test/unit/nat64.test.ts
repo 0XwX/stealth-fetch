@@ -81,7 +81,7 @@ describe("DNS resolution", () => {
       const result = await resolveIPv4("example.com");
       expect(result).toEqual({ ipv4: "1.2.3.4", ttl: 300 });
       expect(fetch).toHaveBeenCalledWith(
-        expect.stringContaining("https://1.1.1.1/dns-query?name=example.com&type=A"),
+        expect.stringContaining("https://one.one.one.one/dns-query?name=example.com&type=A"),
         expect.objectContaining({
           headers: { Accept: "application/dns-json" },
         }),

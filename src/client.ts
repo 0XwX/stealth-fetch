@@ -640,16 +640,31 @@ async function tryWithNat64(
 
   let lastErrorMessage = "unknown error";
 
-  // Stream bodies are not replayable, and non-idempotent methods risk
-  // duplicate side-effects if retried after the server already processed
-  // the request. Only attempt the single best-ranked candidate.
-  if (isStreamBody || !isIdempotent) {
+  // Stream bodies are not replayable — single attempt only.
+  if (isStreamBody) {
     throwIfAborted(signal);
     const attempt = startAttempt(candidates[0], 0);
     const result = await attempt.promise;
     if (result.ok) return result.response;
     if (signal.aborted) throw result.error;
     throw makeFailure(result.message);
+  }
+
+  // Non-idempotent with non-stream body: serial retry across candidates.
+  // NAT64 failures are connection-level (TCP/TLS handshake) — the request
+  // body was never sent, so retrying with the next prefix is safe.
+  // No hedging (parallel) to avoid duplicate delivery if the first
+  // attempt's request actually reaches the server.
+  if (!isIdempotent) {
+    for (let i = 0; i < candidates.length; i++) {
+      throwIfAborted(signal);
+      const attempt = startAttempt(candidates[i], i);
+      const result = await attempt.promise;
+      if (result.ok) return result.response;
+      if (signal.aborted) throw result.error;
+      lastErrorMessage = result.message;
+    }
+    throw makeFailure(lastErrorMessage);
   }
 
   // Idempotent + non-stream: serial retry across candidates.
@@ -691,8 +706,14 @@ async function tryWithNat64(
       ]);
 
       if (firstWinner.result.ok) {
-        if (firstWinner.which === "first") second.cancel();
-        else first.cancel();
+        const loser = firstWinner.which === "first" ? second : first;
+        loser.cancel();
+        // Clean up loser's response body if it also completed successfully
+        loser.promise
+          .then(r => {
+            if (r.ok) r.response.body.cancel().catch(() => {});
+          })
+          .catch(() => {});
         return firstWinner.result.response;
       }
       if (signal.aborted) throw firstWinner.result.error;

@@ -1,0 +1,15 @@
+{
+  "name": "wasm-tls",
+  "type": "module",
+  "version": "0.1.0",
+  "files": [
+    "wasm_tls_bg.wasm",
+    "wasm_tls.js",
+    "wasm_tls.d.ts"
+  ],
+  "main": "wasm_tls.js",
+  "types": "wasm_tls.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

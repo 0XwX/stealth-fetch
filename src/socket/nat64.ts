@@ -17,43 +17,20 @@ import { CF_IPV4_RANGES } from "./cloudflare-ranges.js";
  * Example: "2602:fc59:b0:64::" + 108.160.165.8 → [2602:fc59:b0:64::6ca0:a508]
  */
 const NAT64_PREFIXES = [
-  // === Verified working from CF Workers (deploy tested) ===
-  "2602:fc59:b0:64::", // ZTVI/ForwardingPlane, Fremont CA, USA — 12ms
-  "2602:fc59:11:64::", // ZTVI/ForwardingPlane, Chicago, USA — 60ms
-  "2a00:1098:2b:0:0:1:", // Kasper Dupont (nat64.net), Amsterdam — 150ms
-  "2a00:1098:2c:0:0:5:", // Kasper Dupont (nat64.net), London — 140ms
-  "2a02:898:146:64::", // IPng Networks, Netherlands — 155ms
-  "2001:67c:2b0:db32::", // Trex, Tampere, Finland — 195ms
-
-  // === Additional ZTVI/ForwardingPlane prefixes ===
-  "2602:fc59:20::", // ZTVI/ForwardingPlane, unknown location
-
-  // === Kasper Dupont (nat64.net) additional locations ===
-  "2a00:1098:2c:1::", // nat64.net, London (official /96 prefix)
-  "2a01:4f8:c2c:123f:64:5:", // nat64.net, Nuremberg, Germany
-  "2a01:4f8:c2c:123f:64::", // nat64.net, Nuremberg (alternate form)
-  "2a01:4f9:c010:3f02:64:0:", // nat64.net, Helsinki, Finland
-  "2a01:4f9:c010:3f02:64::", // nat64.net, Helsinki (alternate form)
-
-  // === level66.network ===
-  "2001:67c:2960:6464::", // level66.network, Germany (Anycast)
-  "2a09:11c0:f1:be00::", // level66.network, Frankfurt
-
-  // === go6Labs, Slovenia ===
-  "2001:67c:27e4:642::", // go6Labs, Slovenia
-  "2001:67c:27e4:64::", // go6Labs, Slovenia
-  "2001:67c:27e4:1064::", // go6Labs, Slovenia
-  "2001:67c:27e4:11::", // go6Labs, Slovenia
-
-  // === Other providers ===
-  "2a03:7900:6446::", // Tuxis, Netherlands
-  "2001:67c:2b0:db32:0:1:", // Trex, second prefix, Finland
+  // Verified working from CF Workers (2025-02 deploy test, KIX colo).
+  // Ordered by measured latency. Only top NAT64_PREFIX_COUNT are used.
+  "2602:fc59:b0:64::", // ZTVI/ForwardingPlane, Fremont CA, USA — 228ms
+  "2602:fc59:20:64::", // ZTVI/ForwardingPlane, ABQ-IX NM, USA — 314ms
+  "2602:fc59:11:64::", // ZTVI/ForwardingPlane, CMI IL, USA — 361ms
+  "2a00:1098:2b:0:0:1:", // nat64.net, Amsterdam — 514ms
+  "2a00:1098:2c:0:0:5:", // nat64.net, London — 489ms
+  "2a02:898:146:64::", // IPng Networks, Netherlands — 531ms
 ];
 
 /** Exported for testing */
 export { NAT64_PREFIXES };
 
-export interface DnsARecord {
+interface DnsARecord {
   ipv4: string;
   ttl: number;
 }
@@ -69,7 +46,7 @@ async function dohQuery(
 ): Promise<DnsJsonResponse | null> {
   try {
     const resp = await fetch(
-      `https://1.1.1.1/dns-query?name=${encodeURIComponent(name)}&type=${type}`,
+      `https://one.one.one.one/dns-query?name=${encodeURIComponent(name)}&type=${type}`,
       { headers: { Accept: "application/dns-json" }, signal: signal ?? AbortSignal.timeout(3000) },
     );
     if (!resp.ok) return null;
@@ -81,7 +58,7 @@ async function dohQuery(
 }
 
 /**
- * Resolve hostname to IPv4 via DNS-over-HTTPS (Cloudflare 1.1.1.1).
+ * Resolve hostname to IPv4 via DNS-over-HTTPS (one.one.one.one).
  * Uses fetch() which is always available in CF Workers.
  */
 export async function resolveIPv4(hostname: string): Promise<DnsARecord | null> {
@@ -115,32 +92,6 @@ export function ipv4ToNAT64(ipv4: string, prefix: string): string {
 
   const suffix = `${hex[0]}${hex[1]}:${hex[2]}${hex[3]}`;
   return `[${prefix}${suffix}]`;
-}
-
-export interface BypassResult {
-  strategy: "nat64";
-  /** The hostname to pass to connect() */
-  connectHostname: string;
-  /** NAT64 prefix used */
-  nat64Prefix: string;
-  /** Original IPv4 resolved from DNS */
-  resolvedIPv4: string;
-}
-
-/**
- * Generate NAT64 bypass hostname candidates for a given domain.
- * Returns an array of { connectHostname, nat64Prefix } to try in order.
- */
-export async function generateBypassCandidates(hostname: string): Promise<BypassResult[]> {
-  const dns = await resolveIPv4(hostname);
-  if (!dns) return [];
-
-  return NAT64_PREFIXES.map(prefix => ({
-    strategy: "nat64" as const,
-    connectHostname: ipv4ToNAT64(dns.ipv4, prefix),
-    nat64Prefix: prefix,
-    resolvedIPv4: dns.ipv4,
-  }));
 }
 
 /** Check if an error is a CF Workers network restriction error */

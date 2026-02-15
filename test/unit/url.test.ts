@@ -118,6 +118,6 @@ describe("parseUrl", () => {
   });
 
   it("should throw on invalid URL", () => {
-     expect(() => parseUrl("not-a-url")).toThrow(TypeError);
+    expect(() => parseUrl("not-a-url")).toThrow(TypeError);
   });
 });
