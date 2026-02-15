@@ -112,7 +112,9 @@ import {
   Http2Connection,
   http1Request,
   clearPool,
+  clearNat64PrefixStats,
   preconnect,
+  prewarmDns,
   createWasmTLSSocket,
 } from "stealth-fetch";
 ```
@@ -122,6 +124,8 @@ import {
 - `http1Request(socket, request)` — HTTP/1.1 over a raw socket
 - `clearPool()` — Clear the HTTP/2 connection pool
 - `preconnect(hostname, port?)` — Pre-establish an HTTP/2 connection
+- `prewarmDns(hostnames, options?)` — Warm DNS/CF-detection cache
+- `clearNat64PrefixStats()` — Clear NAT64 prefix health scores
 - `createWasmTLSSocket(hostname, port, alpnList)` — WASM TLS socket with ALPN
 
 ## Differences From `fetch`

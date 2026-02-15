@@ -65,3 +65,32 @@ export function serializeHttp1Headers(headers: Record<string, string>): string {
   }
   return result;
 }
+
+// RFC 7230 3.2.6. Field Value Components: token = 1*tchar
+// tchar = "!" / "#" / "$" / "%" / "&" / "'" / "*" / "+" / "-" / "." / "^" / "_" / "`" / "|" / "~" / DIGIT / ALPHA
+const TOKEN_RE = /^[a-zA-Z0-9!#$%&'*+.^_`|~-]+$/;
+
+/**
+ * Validate HTTP method to prevent CRLF injection and ensure valid token characters.
+ */
+export function validateMethod(method: string): void {
+  if (!TOKEN_RE.test(method)) {
+    throw new Error(
+      `Invalid method: ${JSON.stringify(method)} contains invalid characters`,
+    );
+  }
+}
+
+// RFC 7230 3.1.1 request-target cannot contain whitespace (SP/HTAB) or CR/LF
+const INVALID_PATH_RE = /[\r\n\s]/;
+
+/**
+ * Validate HTTP path to prevent Request Splitting and ensure valid request-target.
+ */
+export function validatePath(path: string): void {
+  if (INVALID_PATH_RE.test(path)) {
+    throw new Error(
+      `Invalid path: ${JSON.stringify(path)} contains whitespace or control characters`,
+    );
+  }
+}

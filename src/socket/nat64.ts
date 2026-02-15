@@ -6,6 +6,8 @@
  * Prefixes verified via RFC 7050 (querying DNS64 servers for ipv4only.arpa).
  */
 
+import { CF_IPV4_RANGES, CF_IPV6_PREFIXES } from "./cloudflare-ranges.js";
+
 /**
  * NAT64 /96 prefixes, ordered by reliability.
  * Format: full expanded prefix ending with ":" (no trailing "::").
@@ -56,21 +58,35 @@ export interface DnsARecord {
   ttl: number;
 }
 
+interface DnsJsonResponse {
+  Answer?: Array<{ type: number; data: string; TTL: number }>;
+}
+
+async function dohQuery(
+  name: string,
+  type: "A" | "AAAA",
+  signal?: AbortSignal,
+): Promise<DnsJsonResponse | null> {
+  try {
+    const resp = await fetch(
+      `https://1.1.1.1/dns-query?name=${encodeURIComponent(name)}&type=${type}`,
+      { headers: { Accept: "application/dns-json" }, signal: signal ?? AbortSignal.timeout(3000) },
+    );
+    if (!resp.ok) return null;
+
+    return (await resp.json()) as DnsJsonResponse;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Resolve hostname to IPv4 via DNS-over-HTTPS (Cloudflare 1.1.1.1).
  * Uses fetch() which is always available in CF Workers.
  */
 export async function resolveIPv4(hostname: string): Promise<DnsARecord | null> {
-  const resp = await fetch(
-    `https://1.1.1.1/dns-query?name=${encodeURIComponent(hostname)}&type=A`,
-    { headers: { Accept: "application/dns-json" }, signal: AbortSignal.timeout(3000) },
-  );
-  if (!resp.ok) return null;
-
-  const data = (await resp.json()) as {
-    Answer?: Array<{ type: number; data: string; TTL: number }>;
-  };
-  if (!data.Answer) return null;
+  const data = await dohQuery(hostname, "A");
+  if (!data || !data.Answer) return null;
 
   const aRecord = data.Answer.find(r => r.type === 1);
   if (!aRecord) return null;
@@ -93,7 +109,7 @@ export function ipv4ToNAT64(ipv4: string, prefix: string): string {
 
   const hex = parts.map(p => {
     const n = parseInt(p, 10);
-    if (n < 0 || n > 255) throw new Error(`Invalid IPv4 octet: ${p}`);
+    if (Number.isNaN(n) || n < 0 || n > 255) throw new Error(`Invalid IPv4 octet: ${p}`);
     return n.toString(16).padStart(2, "0");
   });
 
@@ -139,46 +155,6 @@ export function isCloudflareNetworkError(err: unknown): boolean {
 
 // ── Cloudflare IP range detection ──────────────────────────────
 
-/**
- * CF IPv4 ranges as [start, end] uint32 pairs.
- * Source: https://www.cloudflare.com/ips/
- */
-const CF_IPV4_RANGES: ReadonlyArray<readonly [number, number]> = (() => {
-  const toU32 = (ip: string): number => {
-    const p = ip.split(".").map(Number);
-    return ((p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]) >>> 0;
-  };
-  return [
-    [toU32("173.245.48.0"), toU32("173.245.63.255")], // /20
-    [toU32("103.21.244.0"), toU32("103.21.247.255")], // /22
-    [toU32("103.22.200.0"), toU32("103.22.203.255")], // /22
-    [toU32("103.31.4.0"), toU32("103.31.7.255")], // /22
-    [toU32("141.101.64.0"), toU32("141.101.127.255")], // /18
-    [toU32("108.162.192.0"), toU32("108.162.255.255")], // /18
-    [toU32("190.93.240.0"), toU32("190.93.255.255")], // /20
-    [toU32("188.114.96.0"), toU32("188.114.111.255")], // /20
-    [toU32("197.234.240.0"), toU32("197.234.243.255")], // /22
-    [toU32("198.41.128.0"), toU32("198.41.255.255")], // /17
-    [toU32("162.158.0.0"), toU32("162.159.255.255")], // /15
-    [toU32("104.16.0.0"), toU32("104.27.255.255")], // /12
-    [toU32("172.64.0.0"), toU32("172.71.255.255")], // /13
-    [toU32("131.0.72.0"), toU32("131.0.75.255")], // /22
-  ] as const;
-})();
-
-/**
- * CF IPv6 prefixes (first 32 bits).
- * All CF IPv6 ranges are /32 or larger, so prefix matching is sufficient.
- */
-const CF_IPV6_PREFIXES = [
-  "2400:cb00", // 2400:cb00::/32
-  "2606:4700", // 2606:4700::/32
-  "2803:f800", // 2803:f800::/32
-  "2405:8100", // 2405:8100::/32
-  "2a06:98c0", // 2a06:98c0::/29
-  "2c0f:f248", // 2c0f:f248::/32
-] as const;
-
 function ipv4ToUint32(ip: string): number {
   const p = ip.split(".").map(Number);
   return ((p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]) >>> 0;
@@ -203,10 +179,6 @@ export interface CfCheckResult {
   ttl: number;
 }
 
-interface DnsJsonResponse {
-  Answer?: Array<{ type: number; data: string; TTL: number }>;
-}
-
 /**
  * Resolve hostname via DoH (parallel A + AAAA), check if IP is in CF ranges.
  * Used to pre-detect CF CDN targets that need NAT64 bypass.
@@ -214,15 +186,9 @@ interface DnsJsonResponse {
 export async function resolveAndCheckCloudflare(hostname: string): Promise<CfCheckResult> {
   const t0 = Date.now();
   const dnsSignal = AbortSignal.timeout(3000);
-  const [aResp, aaaaResp] = await Promise.all([
-    fetch(`https://1.1.1.1/dns-query?name=${encodeURIComponent(hostname)}&type=A`, {
-      headers: { Accept: "application/dns-json" },
-      signal: dnsSignal,
-    }),
-    fetch(`https://1.1.1.1/dns-query?name=${encodeURIComponent(hostname)}&type=AAAA`, {
-      headers: { Accept: "application/dns-json" },
-      signal: dnsSignal,
-    }),
+  const [aData, aaaaData] = await Promise.all([
+    dohQuery(hostname, "A", dnsSignal),
+    dohQuery(hostname, "AAAA", dnsSignal),
   ]);
   const dnsMs = Date.now() - t0;
 
@@ -231,9 +197,8 @@ export async function resolveAndCheckCloudflare(hostname: string): Promise<CfChe
   let isCf = false;
   const ttls: number[] = [];
 
-  if (aResp.ok) {
-    const data = (await aResp.json()) as DnsJsonResponse;
-    const aRecord = data.Answer?.find(r => r.type === 1);
+  if (aData) {
+    const aRecord = aData.Answer?.find(r => r.type === 1);
     if (aRecord) {
       ipv4 = aRecord.data;
       ttls.push(aRecord.TTL);
@@ -241,9 +206,8 @@ export async function resolveAndCheckCloudflare(hostname: string): Promise<CfChe
     }
   }
 
-  if (aaaaResp.ok) {
-    const data = (await aaaaResp.json()) as DnsJsonResponse;
-    const aaaaRecord = data.Answer?.find(r => r.type === 28);
+  if (aaaaData) {
+    const aaaaRecord = aaaaData.Answer?.find(r => r.type === 28);
     if (aaaaRecord) {
       ipv6 = aaaaRecord.data;
       ttls.push(aaaaRecord.TTL);

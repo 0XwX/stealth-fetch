@@ -19,6 +19,7 @@ import {
   ipv4ToNAT64,
   type CfCheckResult,
 } from "./socket/nat64.js";
+import { rankNat64Prefixes, recordNat64PrefixResult } from "./socket/nat64-health.js";
 import { getCachedDns, setCachedDns } from "./dns-cache.js";
 import { preloadHpack } from "./http2/hpack.js";
 import { preloadWasmTls } from "./socket/wasm-tls-bridge.js";
@@ -121,6 +122,7 @@ export async function preconnect(hostname: string, port: number = 443): Promise<
     const candidates = getNat64Candidates(cfCheck.ipv4);
     // Try NAT64 prefixes
     for (let i = 0; i < candidates.length; i++) {
+      const t0 = Date.now();
       try {
         const perPrefixSignal = AbortSignal.timeout(NAT64_PER_PREFIX_TIMEOUT);
         const client = await abortableConnect(
@@ -130,15 +132,17 @@ export async function preconnect(hostname: string, port: number = 443): Promise<
               port,
               true,
               { settingsTimeout: 5000 },
-              candidates[i],
+              candidates[i].connectHostname,
               perPrefixSignal,
             ),
           perPrefixSignal,
           c => c.close().catch(() => {}),
         );
-        poolClient(hostname, port, client, candidates[i]);
+        recordNat64PrefixResult(candidates[i].prefix, true, Date.now() - t0);
+        poolClient(hostname, port, client, candidates[i].connectHostname);
         return;
       } catch {
+        recordNat64PrefixResult(candidates[i].prefix, false, Date.now() - t0);
         if (i === candidates.length - 1) {
           throw new Error(`preconnect: all NAT64 prefixes failed for ${hostname}:${port}`);
         }
@@ -167,6 +171,53 @@ export async function preconnect(hostname: string, port: number = 443): Promise<
   } catch {
     // H1-only or connection failed — nothing to pool
   }
+}
+
+export interface PrewarmDnsOptions {
+  /**
+   * Max parallel DNS warmups.
+   * Keep this small in Workers to avoid spiky fan-out.
+   */
+  concurrency?: number;
+  /** Optional cancellation signal */
+  signal?: AbortSignal;
+  /** Ignore per-host lookup errors (default: true) */
+  ignoreErrors?: boolean;
+}
+
+/**
+ * Warm DNS/CF-detection cache for a set of hostnames.
+ * Useful for latency-sensitive cold starts.
+ */
+export async function prewarmDns(
+  hostnames: readonly string[],
+  options: PrewarmDnsOptions = {},
+): Promise<void> {
+  const unique = [...new Set(hostnames.map(h => h.trim().toLowerCase()).filter(Boolean))];
+  if (unique.length === 0) return;
+
+  const signal = options.signal;
+  const concurrency = Math.min(16, Math.max(1, options.concurrency ?? 4));
+  const ignoreErrors = options.ignoreErrors ?? true;
+  let cursor = 0;
+
+  const worker = async () => {
+    while (true) {
+      if (signal?.aborted) {
+        throw signal.reason ?? new DOMException("Aborted", "AbortError");
+      }
+      const index = cursor++;
+      if (index >= unique.length) return;
+      const hostname = unique[index];
+      try {
+        await resolveAndCheckCloudflareCached(hostname);
+      } catch (error) {
+        if (!ignoreErrors) throw error;
+      }
+    }
+  };
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, unique.length) }, () => worker()));
 }
 
 /**
@@ -392,20 +443,34 @@ async function doRequest(
  * Cached wrapper around resolveAndCheckCloudflare().
  * Avoids repeated DoH queries for the same hostname (saves 2-5ms per hit).
  */
+const dnsInflight = new Map<string, Promise<CfCheckResult>>();
+
 async function resolveAndCheckCloudflareCached(hostname: string): Promise<CfCheckResult> {
-  const cached = getCachedDns(hostname);
+  const key = hostname.toLowerCase();
+  const cached = getCachedDns(key);
   if (cached) return cached;
-  try {
-    const result = await resolveAndCheckCloudflare(hostname);
-    setCachedDns(hostname, result);
-    return result;
-  } catch {
-    // DoH failure (timeout, network error) → degrade to unknown, proceed with direct connection
-    console.debug(`[dns] DoH failed for ${hostname}, degrading to direct`);
-    const degraded: CfCheckResult = { isCf: false, ipv4: null, ipv6: null, dnsMs: 0, ttl: 0 };
-    setCachedDns(hostname, degraded);
-    return degraded;
-  }
+
+  const inflight = dnsInflight.get(key);
+  if (inflight) return inflight;
+
+  const lookupPromise = (async () => {
+    try {
+      const result = await resolveAndCheckCloudflare(key);
+      setCachedDns(key, result);
+      return result;
+    } catch {
+      // DoH failure (timeout, network error) → degrade to unknown, proceed with direct connection
+      console.debug(`[dns] DoH failed for ${key}, degrading to direct`);
+      const degraded: CfCheckResult = { isCf: false, ipv4: null, ipv6: null, dnsMs: 0, ttl: 0 };
+      setCachedDns(key, degraded);
+      return degraded;
+    } finally {
+      dnsInflight.delete(key);
+    }
+  })();
+
+  dnsInflight.set(key, lookupPromise);
+  return lookupPromise;
 }
 
 /** Number of NAT64 prefixes to try before giving up */
@@ -414,8 +479,19 @@ const NAT64_PREFIX_COUNT = 3;
 /** Per-prefix timeout for NAT64 connection attempts (ms) */
 const NAT64_PER_PREFIX_TIMEOUT = 1000;
 
+/**
+ * Launch 2nd NAT64 candidate after this delay when 1st is still pending.
+ * Reduces long-tail latency without full fan-out.
+ */
+const NAT64_HEDGE_DELAY_MS = 200;
+
 /** Timeout for WASM TLS ALPN handshake on first connection to non-CF targets (ms) */
 const WASM_TLS_HANDSHAKE_TIMEOUT = 2000;
+
+interface Nat64Candidate {
+  prefix: string;
+  connectHostname: string;
+}
 
 /**
  * Generate NAT64 connect hostnames for the given target (pure computation, no I/O).
@@ -423,8 +499,13 @@ const WASM_TLS_HANDSHAKE_TIMEOUT = 2000;
  * so TCP probing is unreliable. Instead, we generate candidates and try them with
  * actual TLS+HTTP requests.
  */
-function getNat64Candidates(ipv4: string): string[] {
-  return NAT64_PREFIXES.slice(0, NAT64_PREFIX_COUNT).map(prefix => ipv4ToNAT64(ipv4, prefix));
+function getNat64Candidates(ipv4: string): Nat64Candidate[] {
+  const preferred = NAT64_PREFIXES.slice(0, NAT64_PREFIX_COUNT);
+  const ranked = rankNat64Prefixes(preferred);
+  return ranked.map(prefix => ({
+    prefix,
+    connectHostname: ipv4ToNAT64(ipv4, prefix),
+  }));
 }
 
 /**
@@ -468,7 +549,171 @@ async function autoRequest(
   return autoRequestCompat(parsed, options, body, signal, cfCheck);
 }
 
-/** compat strategy: ALPN negotiation + protocol cache (original behavior) */
+/** RFC 7231 idempotent methods — safe to hedge (send concurrently). */
+const IDEMPOTENT_METHODS = new Set(["GET", "HEAD", "OPTIONS", "PUT", "DELETE", "TRACE"]);
+
+function isMethodIdempotent(method: string | undefined): boolean {
+  return IDEMPOTENT_METHODS.has((method ?? "GET").toUpperCase());
+}
+
+/**
+ * Helper to attempt connection via multiple NAT64 candidates.
+ * Uses hedged (parallel) retry for idempotent requests with non-stream bodies,
+ * and strict serial retry otherwise.
+ */
+async function tryWithNat64(
+  candidates: Nat64Candidate[],
+  parsed: ParsedUrl,
+  signal: AbortSignal,
+  isStreamBody: boolean,
+  isIdempotent: boolean,
+  logPrefix: string,
+  attemptFn: (candidate: Nat64Candidate, signal: AbortSignal) => Promise<HttpResponse>,
+  createFailureMessage?: (lastError: string) => string,
+): Promise<HttpResponse> {
+  if (candidates.length === 0) {
+    throw new Error(`No NAT64 candidates available for ${parsed.hostname}:${parsed.port}`);
+  }
+
+  type AttemptResult =
+    | { ok: true; response: HttpResponse }
+    | { ok: false; error: unknown; message: string; cancelled?: boolean };
+
+  const startAttempt = (candidate: Nat64Candidate, index: number) => {
+    const cancelController = new AbortController();
+    const perPrefixSignal = AbortSignal.any([
+      signal,
+      cancelController.signal,
+      AbortSignal.timeout(NAT64_PER_PREFIX_TIMEOUT),
+    ]);
+    const t0 = Date.now();
+    const promise = (async (): Promise<AttemptResult> => {
+      try {
+        console.debug(
+          `[${logPrefix}] ${parsed.hostname} trying NAT64[${index}] (${candidate.prefix}): ${candidate.connectHostname}`,
+        );
+        const response = await attemptFn(candidate, perPrefixSignal);
+        const ms = Date.now() - t0;
+        recordNat64PrefixResult(candidate.prefix, true, ms);
+        console.debug(`[${logPrefix}] ${parsed.hostname} NAT64[${index}] OK in ${ms}ms`);
+        return { ok: true, response };
+      } catch (error) {
+        const ms = Date.now() - t0;
+        const message = error instanceof Error ? error.message : String(error);
+        if (cancelController.signal.aborted && !signal.aborted) {
+          console.debug(
+            `[${logPrefix}] ${parsed.hostname} NAT64[${index}] cancelled by hedge winner`,
+          );
+          return { ok: false, error, message: "cancelled-by-hedge", cancelled: true };
+        }
+        recordNat64PrefixResult(candidate.prefix, false, ms);
+        console.debug(
+          `[${logPrefix}] ${parsed.hostname} NAT64[${index}] failed in ${ms}ms: ${message}`,
+        );
+        return { ok: false, error, message };
+      }
+    })();
+
+    return {
+      promise,
+      cancel: () =>
+        cancelController.abort(
+          new DOMException("NAT64 attempt cancelled by hedge winner", "AbortError"),
+        ),
+    };
+  };
+
+  const makeFailure = (lastError: string): Error =>
+    createFailureMessage
+      ? new Error(createFailureMessage(lastError))
+      : new Error(
+          `All ${candidates.length} NAT64 prefixes failed for ${parsed.hostname}:${parsed.port}. Last error: ${lastError}`,
+        );
+
+  let lastErrorMessage = "unknown error";
+
+  // Stream bodies are not replayable, and non-idempotent methods risk
+  // duplicate side-effects if retried after the server already processed
+  // the request. Only attempt the single best-ranked candidate.
+  if (isStreamBody || !isIdempotent) {
+    throwIfAborted(signal);
+    const attempt = startAttempt(candidates[0], 0);
+    const result = await attempt.promise;
+    if (result.ok) return result.response;
+    if (signal.aborted) throw result.error;
+    throw makeFailure(result.message);
+  }
+
+  // Idempotent + non-stream: serial retry across candidates.
+  if (candidates.length === 1) {
+    throwIfAborted(signal);
+    const attempt = startAttempt(candidates[0], 0);
+    const result = await attempt.promise;
+    if (result.ok) return result.response;
+    if (signal.aborted) throw result.error;
+    throw makeFailure(result.message);
+  }
+
+  // Hedged first wave: start #1 now, launch #2 after short delay if #1 still pending.
+  const first = startAttempt(candidates[0], 0);
+  let second: ReturnType<typeof startAttempt> | null = null;
+
+  try {
+    const firstOrDelay = await Promise.race([
+      first.promise.then(result => ({ kind: "first-result" as const, result })),
+      sleep(NAT64_HEDGE_DELAY_MS, signal).then(() => ({ kind: "delay" as const })),
+    ]);
+
+    if (firstOrDelay.kind === "first-result") {
+      if (firstOrDelay.result.ok) return firstOrDelay.result.response;
+      if (signal.aborted) throw firstOrDelay.result.error;
+      lastErrorMessage = firstOrDelay.result.message;
+
+      second = startAttempt(candidates[1], 1);
+      const secondResult = await second.promise;
+      if (secondResult.ok) return secondResult.response;
+      if (signal.aborted) throw secondResult.error;
+      lastErrorMessage = secondResult.message;
+    } else {
+      second = startAttempt(candidates[1], 1);
+
+      const firstWinner = await Promise.race([
+        first.promise.then(result => ({ which: "first" as const, result })),
+        second.promise.then(result => ({ which: "second" as const, result })),
+      ]);
+
+      if (firstWinner.result.ok) {
+        if (firstWinner.which === "first") second.cancel();
+        else first.cancel();
+        return firstWinner.result.response;
+      }
+      if (signal.aborted) throw firstWinner.result.error;
+      lastErrorMessage = firstWinner.result.message;
+
+      const remainingResult =
+        firstWinner.which === "first" ? await second.promise : await first.promise;
+      if (remainingResult.ok) return remainingResult.response;
+      if (signal.aborted) throw remainingResult.error;
+      lastErrorMessage = remainingResult.message;
+    }
+  } catch (error) {
+    if (signal.aborted) throw error;
+    throw error;
+  }
+
+  // Remaining candidates keep serial semantics to avoid over-fanout.
+  for (let i = 2; i < candidates.length; i++) {
+    throwIfAborted(signal);
+    const attempt = startAttempt(candidates[i], i);
+    const result = await attempt.promise;
+    if (result.ok) return result.response;
+    if (signal.aborted) throw result.error;
+    lastErrorMessage = result.message;
+  }
+
+  throw makeFailure(lastErrorMessage);
+}
+
 async function autoRequestCompat(
   parsed: ParsedUrl,
   options: NormalizedOptions,
@@ -477,48 +722,21 @@ async function autoRequestCompat(
   cfCheck: CfCheckResult,
 ): Promise<HttpResponse> {
   const isStreamBody = body instanceof ReadableStream;
+  const idempotent = isMethodIdempotent(options.method);
 
   if (cfCheck.isCf && cfCheck.ipv4) {
     // Target is behind CF CDN — direct connect will fail ("TCP Loop detected").
     // Try NAT64 prefixes with full TLS+HTTP requests, each with a short timeout.
     const candidates = getNat64Candidates(cfCheck.ipv4);
-    for (let i = 0; i < candidates.length; i++) {
-      throwIfAborted(signal);
-      const t0 = Date.now();
-      const perPrefixSignal = AbortSignal.any([
-        signal,
-        AbortSignal.timeout(NAT64_PER_PREFIX_TIMEOUT),
-      ]);
-      try {
-        console.debug(
-          `[autoRequest:compat] ${parsed.hostname} trying NAT64[${i}]: ${candidates[i]}`,
-        );
-        const result = await autoRequestWithSocket(
-          parsed,
-          options,
-          body,
-          perPrefixSignal,
-          candidates[i],
-        );
-        console.debug(
-          `[autoRequest:compat] ${parsed.hostname} NAT64[${i}] OK in ${Date.now() - t0}ms`,
-        );
-        return result;
-      } catch (err) {
-        const ms = Date.now() - t0;
-        const msg = err instanceof Error ? err.message : String(err);
-        console.debug(
-          `[autoRequest:compat] ${parsed.hostname} NAT64[${i}] failed in ${ms}ms: ${msg}`,
-        );
-        if (signal.aborted) throw err;
-        // ReadableStream body may have been consumed — cannot retry
-        if (isStreamBody || i === candidates.length - 1) {
-          throw new Error(
-            `All ${candidates.length} NAT64 prefixes failed for ${parsed.hostname}:${parsed.port}. Last error: ${msg}`,
-          );
-        }
-      }
-    }
+    return await tryWithNat64(
+      candidates,
+      parsed,
+      signal,
+      isStreamBody,
+      idempotent,
+      "autoRequest:compat",
+      (candidate, s) => autoRequestWithSocket(parsed, options, body, s, candidate.connectHostname),
+    );
   }
 
   // Non-CF target — use protocol cache to skip ALPN on repeat visits
@@ -576,25 +794,16 @@ async function autoRequestCompat(
     );
   }
   const candidates = getNat64Candidates(ipv4);
-  for (let i = 0; i < candidates.length; i++) {
-    throwIfAborted(signal);
-    const perPrefixSignal = AbortSignal.any([
-      signal,
-      AbortSignal.timeout(NAT64_PER_PREFIX_TIMEOUT),
-    ]);
-    try {
-      return await autoRequestWithSocket(parsed, options, body, perPrefixSignal, candidates[i]);
-    } catch (err) {
-      if (signal.aborted) throw err;
-      // ReadableStream body may have been consumed — cannot retry
-      if (isStreamBody || i === candidates.length - 1) {
-        throw new Error(
-          `Connection blocked and all NAT64 prefixes failed for ${parsed.hostname}:${parsed.port}`,
-        );
-      }
-    }
-  }
-  throw new Error(`NAT64 fallback failed for ${parsed.hostname}:${parsed.port}`);
+  return await tryWithNat64(
+    candidates,
+    parsed,
+    signal,
+    isStreamBody,
+    idempotent,
+    "autoRequest:compat",
+    (candidate, s) => autoRequestWithSocket(parsed, options, body, s, candidate.connectHostname),
+    () => `Connection blocked and all NAT64 prefixes failed for ${parsed.hostname}:${parsed.port}`,
+  );
 }
 
 /** fast-h1 strategy: platform TLS for non-CF, WASM TLS h1-only for CF */
@@ -606,47 +815,21 @@ async function autoRequestFastH1(
   cfCheck: CfCheckResult,
 ): Promise<HttpResponse> {
   const isStreamBody = body instanceof ReadableStream;
+  const idempotent = isMethodIdempotent(options.method);
 
   if (cfCheck.isCf && cfCheck.ipv4) {
     // Target is behind CF CDN — NAT64 + WASM TLS h1-only
     const candidates = getNat64Candidates(cfCheck.ipv4);
-    for (let i = 0; i < candidates.length; i++) {
-      throwIfAborted(signal);
-      const t0 = Date.now();
-      const perPrefixSignal = AbortSignal.any([
-        signal,
-        AbortSignal.timeout(NAT64_PER_PREFIX_TIMEOUT),
-      ]);
-      try {
-        console.debug(
-          `[autoRequest:fast-h1] ${parsed.hostname} trying NAT64[${i}]: ${candidates[i]}`,
-        );
-        const result = await http11RequestWithWasmTLS(
-          parsed,
-          options,
-          body,
-          perPrefixSignal,
-          candidates[i],
-        );
-        console.debug(
-          `[autoRequest:fast-h1] ${parsed.hostname} NAT64[${i}] OK in ${Date.now() - t0}ms`,
-        );
-        return result;
-      } catch (err) {
-        const ms = Date.now() - t0;
-        const msg = err instanceof Error ? err.message : String(err);
-        console.debug(
-          `[autoRequest:fast-h1] ${parsed.hostname} NAT64[${i}] failed in ${ms}ms: ${msg}`,
-        );
-        if (signal.aborted) throw err;
-        // ReadableStream body may have been consumed — cannot retry
-        if (isStreamBody || i === candidates.length - 1) {
-          throw new Error(
-            `All ${candidates.length} NAT64 prefixes failed for ${parsed.hostname}:${parsed.port}. Last error: ${msg}`,
-          );
-        }
-      }
-    }
+    return await tryWithNat64(
+      candidates,
+      parsed,
+      signal,
+      isStreamBody,
+      idempotent,
+      "autoRequest:fast-h1",
+      (candidate, s) =>
+        http11RequestWithWasmTLS(parsed, options, body, s, candidate.connectHostname),
+    );
   }
 
   // Non-CF target — platform TLS (secureTransport: "on") for speed
@@ -683,25 +866,16 @@ async function autoRequestFastH1(
     );
   }
   const candidates = getNat64Candidates(ipv4);
-  for (let i = 0; i < candidates.length; i++) {
-    throwIfAborted(signal);
-    const perPrefixSignal = AbortSignal.any([
-      signal,
-      AbortSignal.timeout(NAT64_PER_PREFIX_TIMEOUT),
-    ]);
-    try {
-      return await http11RequestWithWasmTLS(parsed, options, body, perPrefixSignal, candidates[i]);
-    } catch (err) {
-      if (signal.aborted) throw err;
-      // ReadableStream body may have been consumed — cannot retry
-      if (isStreamBody || i === candidates.length - 1) {
-        throw new Error(
-          `Connection blocked and all NAT64 prefixes failed for ${parsed.hostname}:${parsed.port}`,
-        );
-      }
-    }
-  }
-  throw new Error(`NAT64 fallback failed for ${parsed.hostname}:${parsed.port}`);
+  return await tryWithNat64(
+    candidates,
+    parsed,
+    signal,
+    isStreamBody,
+    idempotent,
+    "autoRequest:fast-h1",
+    (candidate, s) => http11RequestWithWasmTLS(parsed, options, body, s, candidate.connectHostname),
+    () => `Connection blocked and all NAT64 prefixes failed for ${parsed.hostname}:${parsed.port}`,
+  );
 }
 
 /**
@@ -880,35 +1054,26 @@ async function h2Request(
 ): Promise<HttpResponse> {
   const tls = parsed.protocol === "https";
 
+  const isStreamBody = body instanceof ReadableStream;
+  const idempotent = isMethodIdempotent(options.method);
+
   // Pre-detect CF CDN targets via DNS
   if (tls) {
     throwIfAborted(signal);
     const cfCheck = await resolveAndCheckCloudflareCached(parsed.hostname);
     if (cfCheck.isCf && cfCheck.ipv4) {
       const candidates = getNat64Candidates(cfCheck.ipv4);
-      for (let i = 0; i < candidates.length; i++) {
-        throwIfAborted(signal);
-        const perPrefixSignal = AbortSignal.any([
-          signal,
-          AbortSignal.timeout(NAT64_PER_PREFIX_TIMEOUT),
-        ]);
-        try {
-          console.debug(`[h2Request] ${parsed.hostname} trying NAT64[${i}]: ${candidates[i]}`);
-          return await h2RequestWithConnect(
-            parsed,
-            options,
-            body,
-            tls,
-            perPrefixSignal,
-            candidates[i],
-          );
-        } catch (err) {
-          if (signal.aborted) throw err;
-          if (i === candidates.length - 1) {
-            throw new Error(`All NAT64 prefixes failed for ${parsed.hostname}:${parsed.port}`);
-          }
-        }
-      }
+      return await tryWithNat64(
+        candidates,
+        parsed,
+        signal,
+        isStreamBody,
+        idempotent,
+        "h2Request",
+        (candidate, s) =>
+          h2RequestWithConnect(parsed, options, body, tls, s, candidate.connectHostname),
+        () => `All NAT64 prefixes failed for ${parsed.hostname}:${parsed.port}`,
+      );
     }
   }
 
@@ -927,24 +1092,17 @@ async function h2Request(
     );
   }
   const candidates = getNat64Candidates(ipv4);
-  for (let i = 0; i < candidates.length; i++) {
-    throwIfAborted(signal);
-    const perPrefixSignal = AbortSignal.any([
-      signal,
-      AbortSignal.timeout(NAT64_PER_PREFIX_TIMEOUT),
-    ]);
-    try {
-      return await h2RequestWithConnect(parsed, options, body, tls, perPrefixSignal, candidates[i]);
-    } catch (err) {
-      if (signal.aborted) throw err;
-      if (i === candidates.length - 1) {
-        throw new Error(
-          `Connection blocked and all NAT64 prefixes failed for ${parsed.hostname}:${parsed.port}`,
-        );
-      }
-    }
-  }
-  throw new Error(`NAT64 fallback failed for ${parsed.hostname}:${parsed.port}`);
+  return await tryWithNat64(
+    candidates,
+    parsed,
+    signal,
+    isStreamBody,
+    idempotent,
+    "h2Request",
+    (candidate, s) =>
+      h2RequestWithConnect(parsed, options, body, tls, s, candidate.connectHostname),
+    () => `Connection blocked and all NAT64 prefixes failed for ${parsed.hostname}:${parsed.port}`,
+  );
 }
 
 async function h2RequestWithConnect(
@@ -1073,6 +1231,8 @@ async function http11Request(
   signal: AbortSignal,
 ): Promise<HttpResponse> {
   const tls = parsed.protocol === "https";
+  const isStreamBody = body instanceof ReadableStream;
+  const idempotent = isMethodIdempotent(options.method);
 
   // Pre-detect CF CDN targets via DNS
   if (tls) {
@@ -1085,38 +1245,16 @@ async function http11Request(
     if (cfCheck.isCf && cfCheck.ipv4) {
       // Target is behind CF CDN — try NAT64 candidates with full TLS+HTTP requests
       const candidates = getNat64Candidates(cfCheck.ipv4);
-      for (let i = 0; i < candidates.length; i++) {
-        throwIfAborted(signal);
-        const t0 = Date.now();
-        const perPrefixSignal = AbortSignal.any([
-          signal,
-          AbortSignal.timeout(NAT64_PER_PREFIX_TIMEOUT),
-        ]);
-        try {
-          console.debug(`[http11Request] ${parsed.hostname} trying NAT64[${i}]: ${candidates[i]}`);
-          const result = await http11RequestWithWasmTLS(
-            parsed,
-            options,
-            body,
-            perPrefixSignal,
-            candidates[i],
-          );
-          console.debug(
-            `[http11Request] ${parsed.hostname} NAT64[${i}] OK in ${Date.now() - t0}ms`,
-          );
-          return result;
-        } catch (err) {
-          const ms = Date.now() - t0;
-          const msg = err instanceof Error ? err.message : String(err);
-          console.debug(`[http11Request] ${parsed.hostname} NAT64[${i}] failed in ${ms}ms: ${msg}`);
-          if (signal.aborted) throw err;
-          if (i === candidates.length - 1) {
-            throw new Error(
-              `All ${candidates.length} NAT64 prefixes failed for ${parsed.hostname}:${parsed.port}. Last error: ${msg}`,
-            );
-          }
-        }
-      }
+      return await tryWithNat64(
+        candidates,
+        parsed,
+        signal,
+        isStreamBody,
+        idempotent,
+        "http11Request",
+        (candidate, s) =>
+          http11RequestWithWasmTLS(parsed, options, body, s, candidate.connectHostname),
+      );
     }
   }
 
@@ -1136,24 +1274,16 @@ async function http11Request(
     );
   }
   const candidates = getNat64Candidates(ipv4);
-  for (let i = 0; i < candidates.length; i++) {
-    throwIfAborted(signal);
-    const perPrefixSignal = AbortSignal.any([
-      signal,
-      AbortSignal.timeout(NAT64_PER_PREFIX_TIMEOUT),
-    ]);
-    try {
-      return await http11RequestWithWasmTLS(parsed, options, body, perPrefixSignal, candidates[i]);
-    } catch (err) {
-      if (signal.aborted) throw err;
-      if (i === candidates.length - 1) {
-        throw new Error(
-          `Connection blocked and all NAT64 prefixes failed for ${parsed.hostname}:${parsed.port}`,
-        );
-      }
-    }
-  }
-  throw new Error(`NAT64 fallback failed for ${parsed.hostname}:${parsed.port}`);
+  return await tryWithNat64(
+    candidates,
+    parsed,
+    signal,
+    isStreamBody,
+    idempotent,
+    "http11Request",
+    (candidate, s) => http11RequestWithWasmTLS(parsed, options, body, s, candidate.connectHostname),
+    () => `Connection blocked and all NAT64 prefixes failed for ${parsed.hostname}:${parsed.port}`,
+  );
 }
 
 /** HTTP/1.1 request via WASM TLS socket (for NAT64 — ensures SNI = original hostname) */

@@ -11,6 +11,7 @@ static ROOT_STORE: OnceLock<Arc<RootCertStore>> = OnceLock::new();
 static PROVIDER: OnceLock<Arc<rustls::crypto::CryptoProvider>> = OnceLock::new();
 
 const IO_BUF_CAP: usize = 16 * 1024;
+const MAX_TLS_BUF_SIZE: usize = 128 * 1024;
 
 fn get_root_store() -> Arc<RootCertStore> {
     ROOT_STORE
@@ -84,6 +85,12 @@ impl TlsConnection {
     /// Feed ciphertext received from the network into the TLS engine.
     /// Returns true if rustls has outgoing data to send (call `flush_outgoing_tls`).
     pub fn feed_ciphertext(&mut self, data: &[u8]) -> Result<bool, JsError> {
+        if self.incoming_tls.len() + data.len() > MAX_TLS_BUF_SIZE {
+            self.compact_incoming_tls();
+            if self.incoming_tls.len() + data.len() > MAX_TLS_BUF_SIZE {
+                return Err(JsError::new("Incoming TLS buffer exceeded maximum size"));
+            }
+        }
         self.incoming_tls.extend_from_slice(data);
 
         // Let rustls read TLS records from our buffer (&[u8] implements Read)
@@ -104,15 +111,12 @@ impl TlsConnection {
             } else if self.incoming_tls_offset >= IO_BUF_CAP
                 && self.incoming_tls_offset >= self.incoming_tls.len() / 2
             {
-                let remaining = self.incoming_tls.len() - self.incoming_tls_offset;
-                self.incoming_tls
-                    .copy_within(self.incoming_tls_offset.., 0);
-                self.incoming_tls.truncate(remaining);
-                self.incoming_tls_offset = 0;
+                self.compact_incoming_tls();
             }
         }
 
         // Process the TLS records
+
         let io_state = self
             .conn
             .process_new_packets()
@@ -195,4 +199,15 @@ impl TlsConnection {
 #[wasm_bindgen]
 pub fn wasm_tls_version() -> String {
     "wasm-tls v0.1.0 (rustls + rustls-rustcrypto)".to_string()
+}
+
+impl TlsConnection {
+    fn compact_incoming_tls(&mut self) {
+        if self.incoming_tls_offset > 0 {
+            let remaining = self.incoming_tls.len() - self.incoming_tls_offset;
+            self.incoming_tls.copy_within(self.incoming_tls_offset.., 0);
+            self.incoming_tls.truncate(remaining);
+            self.incoming_tls_offset = 0;
+        }
+    }
 }

@@ -5,7 +5,12 @@
 import { Buffer } from "node:buffer";
 import { createWasmTLSSocket, createPlainSocket } from "../socket/tls.js";
 import { parseUrl, type ParsedUrl } from "../utils/url.js";
-import { buildPseudoHeaders, mergeHeaders } from "../utils/headers.js";
+import {
+  buildPseudoHeaders,
+  mergeHeaders,
+  validateMethod,
+  validatePath,
+} from "../utils/headers.js";
 import { Http2Connection, type ConnectionOptions } from "./connection.js";
 import type { Http2ResponseData } from "./stream.js";
 
@@ -78,6 +83,9 @@ export class Http2Client {
   ): Promise<Http2Response> {
     const parsed = typeof url === "string" ? parseUrl(url) : url;
     const method = options.method ?? "GET";
+
+    validateMethod(method);
+    validatePath(parsed.path);
 
     // Build HTTP/2 headers (pseudo + regular)
     const pseudo = buildPseudoHeaders(method, parsed.hostname, parsed.path, parsed.protocol);

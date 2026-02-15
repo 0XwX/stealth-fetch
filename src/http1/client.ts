@@ -5,7 +5,7 @@
  */
 import { Buffer } from "node:buffer";
 import type { Duplex } from "node:stream";
-import { serializeHttp1Headers } from "../utils/headers.js";
+import { serializeHttp1Headers, validateMethod, validatePath } from "../utils/headers.js";
 import { parseResponseHead, type ParsedResponse } from "./parser.js";
 import { ChunkedDecoder } from "./chunked.js";
 
@@ -39,6 +39,10 @@ export async function http1Request(socket: Duplex, request: Http1Request): Promi
   if (request.signal?.aborted) {
     throw request.signal.reason ?? new DOMException("Aborted", "AbortError");
   }
+
+  // Validate request to prevent CRLF injection / request splitting
+  validateMethod(request.method);
+  validatePath(request.path);
 
   // Build request
   const reqHeaders = { ...request.headers };
@@ -80,17 +84,22 @@ export async function http1Request(socket: Duplex, request: Http1Request): Promi
   if (isStreamBody && request.body instanceof ReadableStream) {
     // Stream body: read chunks and write chunked transfer encoding
     const reader = request.body.getReader();
+    const chunkSuffix = Buffer.from("\r\n");
+    const terminalChunk = Buffer.from("0\r\n\r\n");
     try {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         const chunk = Buffer.from(value);
-        await writeToSocket(socket, Buffer.from(`${chunk.byteLength.toString(16)}\r\n`));
-        await writeToSocket(socket, chunk);
-        await writeToSocket(socket, Buffer.from("\r\n"));
+        const sizeLine = Buffer.from(`${chunk.byteLength.toString(16)}\r\n`);
+        const payload = Buffer.concat(
+          [sizeLine, chunk, chunkSuffix],
+          sizeLine.length + chunk.length + chunkSuffix.length,
+        );
+        await writeToSocket(socket, payload);
       }
       // Terminating chunk
-      await writeToSocket(socket, Buffer.from("0\r\n\r\n"));
+      await writeToSocket(socket, terminalChunk);
     } catch (err) {
       reader.cancel(err as Error).catch(() => {});
       throw err;

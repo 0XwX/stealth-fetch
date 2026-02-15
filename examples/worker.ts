@@ -31,7 +31,10 @@ async function handleAIProxy(req: Request, path: string): Promise<Response> {
   const rest = match[2] || "/";
   const baseUrl = AI_PROVIDERS[provider];
   if (!baseUrl) {
-    return jsonResponse({ error: `Unknown provider: ${provider}`, available: Object.keys(AI_PROVIDERS) }, 404);
+    return jsonResponse(
+      { error: `Unknown provider: ${provider}`, available: Object.keys(AI_PROVIDERS) },
+      404,
+    );
   }
 
   const incomingUrl = new URL(req.url);
@@ -49,7 +52,11 @@ async function handleAIProxy(req: Request, path: string): Promise<Response> {
 
     const responseHeaders = new Headers();
     for (const [name, value] of upstream.rawHeaders) {
-      if (!["transfer-encoding", "connection", "content-encoding", "content-length"].includes(name.toLowerCase())) {
+      if (
+        !["transfer-encoding", "connection", "content-encoding", "content-length"].includes(
+          name.toLowerCase(),
+        )
+      ) {
         responseHeaders.append(name, value);
       }
     }
@@ -64,7 +71,12 @@ async function handleAIProxy(req: Request, path: string): Promise<Response> {
     const message = err instanceof Error ? err.message : String(err);
     const isTimeout = err instanceof DOMException && err.name === "TimeoutError";
     return jsonResponse(
-      { error: isTimeout ? "Upstream request timeout" : "Upstream request failed", detail: message, provider, target: targetUrl },
+      {
+        error: isTimeout ? "Upstream request timeout" : "Upstream request failed",
+        detail: message,
+        provider,
+        target: targetUrl,
+      },
       isTimeout ? 504 : 502,
     );
   }
@@ -186,19 +198,9 @@ export default {
         return handleAIProxy(req, path);
       }
 
+      const providers = Object.keys(AI_PROVIDERS).join(", ");
       return new Response(
-        "stealth-fetch example\n\n" +
-          "GET /http1  → HTTP/1.1 via raw socket\n" +
-          "GET /http2  → HTTP/2 via raw socket\n" +
-          "GET /auto   → Auto-negotiated via raw socket\n" +
-          "GET /fetch  → Standard fetch (with cf-* headers for comparison)\n" +
-          "GET /single?url=&mode=auto|h1|h2|fetch\n\n" +
-          "AI Proxy:\n" +
-          "  ANY /ai/{provider}/{path}  → Forward to AI API via stealth-fetch\n" +
-          "  Providers: " +
-          Object.keys(AI_PROVIDERS).join(", ") +
-          "\n" +
-          "  Example: POST /ai/openai/v1/chat/completions\n",
+        `stealth-fetch example\n\nGET /http1  → HTTP/1.1 via raw socket\nGET /http2  → HTTP/2 via raw socket\nGET /auto   → Auto-negotiated via raw socket\nGET /fetch  → Standard fetch (with cf-* headers for comparison)\nGET /single?url=&mode=auto|h1|h2|fetch\n\nAI Proxy:\n  ANY /ai/{provider}/{path}  → Forward to AI API via stealth-fetch\n  Providers: ${providers}\n  Example: POST /ai/openai/v1/chat/completions\n`,
         { headers: { "Content-Type": "text/plain" } },
       );
     } catch (err) {

@@ -4,8 +4,8 @@
  */
 
 // Main API
-export { request, preconnect } from "./client.js";
-export type { RequestOptions, RetryOptions, HttpResponse } from "./client.js";
+export { request, preconnect, prewarmDns } from "./client.js";
+export type { RequestOptions, RetryOptions, HttpResponse, PrewarmDnsOptions } from "./client.js";
 export { toWebResponse } from "./compat/web.js";
 
 // HTTP/2 client (advanced usage)
@@ -32,6 +32,7 @@ export { clearPool } from "./connection-pool.js";
 
 // DNS cache (advanced usage)
 export { clearDnsCache } from "./dns-cache.js";
+export { clearNat64PrefixStats } from "./socket/nat64-health.js";
 
 // Protocol utilities
 export { parseUrl } from "./utils/url.js";
