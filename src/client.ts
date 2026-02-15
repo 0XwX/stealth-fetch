@@ -7,6 +7,7 @@
  */
 import type { Duplex } from "node:stream";
 import { parseUrl, type ParsedUrl } from "./utils/url.js";
+import { validateHeaderName, validateHeaderValue } from "./utils/headers.js";
 import { createSocket, createWasmTLSSocket } from "./socket/tls.js";
 import { http1Request } from "./http1/client.js";
 import { Http2Client } from "./http2/client.js";
@@ -1481,6 +1482,9 @@ export function normalizeHeaders(
   const result: Record<string, string> = {};
   const entries = headers instanceof Headers ? headers.entries() : Object.entries(headers);
   for (const [key, value] of entries) {
+    validateHeaderName(key);
+    validateHeaderValue(key, value);
+
     const lk = key.toLowerCase();
     // Strip Cloudflare-injected, proxy, and hop-by-hop headers
     // so they are never forwarded upstream.
