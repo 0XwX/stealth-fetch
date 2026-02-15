@@ -41,7 +41,7 @@ export interface RetryOptions {
 
 export interface RequestOptions {
   method?: string;
-  headers?: Record<string, string> | Headers;
+  headers?: Record<string, string> | Headers | string[][];
   body?: Uint8Array | string | ReadableStream<Uint8Array> | null;
   /** Protocol selection: 'h2', 'http/1.1', or 'auto' (default) */
   protocol?: "h2" | "http/1.1" | "auto";
@@ -1475,11 +1475,17 @@ async function compressRequestBody(data: Uint8Array): Promise<Uint8Array> {
 }
 
 export function normalizeHeaders(
-  headers?: Record<string, string> | Headers,
+  headers?: Record<string, string> | Headers | string[][],
 ): Record<string, string> {
   if (!headers) return {};
   const result: Record<string, string> = {};
-  const entries = headers instanceof Headers ? headers.entries() : Object.entries(headers);
+  const entries =
+    headers instanceof Headers
+      ? headers.entries()
+      : Array.isArray(headers)
+        ? (headers as [string, string][])
+        : Object.entries(headers);
+
   for (const [key, value] of entries) {
     const lk = key.toLowerCase();
     // Strip Cloudflare-injected, proxy, and hop-by-hop headers

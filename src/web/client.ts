@@ -28,7 +28,7 @@ export interface RetryOptions {
 
 export interface RequestOptions {
   method?: string;
-  headers?: Record<string, string> | Headers;
+  headers?: Record<string, string> | Headers | string[][];
   body?: Uint8Array | string | ReadableStream<Uint8Array> | null;
   timeout?: number;
   headersTimeout?: number;
@@ -819,11 +819,17 @@ async function abortableConnect<T>(
 }
 
 export function normalizeHeaders(
-  headers?: Record<string, string> | Headers,
+  headers?: Record<string, string> | Headers | string[][],
 ): Record<string, string> {
   if (!headers) return {};
   const result: Record<string, string> = {};
-  const entries = headers instanceof Headers ? headers.entries() : Object.entries(headers);
+  const entries =
+    headers instanceof Headers
+      ? headers.entries()
+      : Array.isArray(headers)
+        ? (headers as [string, string][])
+        : Object.entries(headers);
+
   for (const [key, value] of entries) {
     const lk = key.toLowerCase();
     // Filter headers managed by the library:
