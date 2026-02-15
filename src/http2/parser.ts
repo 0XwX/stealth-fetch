@@ -67,10 +67,7 @@ export class FrameParser extends EventEmitter {
         this.frameType = header[3] as FrameType;
         this.frameFlags = header[4];
         this.frameStreamId =
-          ((header[5] & 0x7f) << 24) |
-          (header[6] << 16) |
-          (header[7] << 8) |
-          header[8];
+          ((header[5] & 0x7f) << 24) | (header[6] << 16) | (header[7] << 8) | header[8];
 
         // Validate frame size
         if (this.frameLength > this.maxFrameSize) {
@@ -112,32 +109,32 @@ export class FrameParser extends EventEmitter {
 
     // Optimization: if first chunk has enough data
     if (this.chunks.length > 0 && this.chunks[0].length >= size) {
-        const chunk = this.chunks[0];
-        // Create a view, no copy
-        const ret = chunk.subarray(0, size);
-        if (chunk.length === size) {
-            this.chunks.shift();
-        } else {
-            this.chunks[0] = chunk.subarray(size);
-        }
-        this.bufferLength -= size;
-        return ret;
+      const chunk = this.chunks[0];
+      // Create a view, no copy
+      const ret = chunk.subarray(0, size);
+      if (chunk.length === size) {
+        this.chunks.shift();
+      } else {
+        this.chunks[0] = chunk.subarray(size);
+      }
+      this.bufferLength -= size;
+      return ret;
     }
 
     // Slow path: spans multiple chunks
     const ret = Buffer.allocUnsafe(size);
     let copied = 0;
     while (copied < size) {
-        const chunk = this.chunks[0];
-        const remaining = size - copied;
-        const len = Math.min(chunk.length, remaining);
-        chunk.copy(ret, copied, 0, len);
-        copied += len;
-        if (len === chunk.length) {
-            this.chunks.shift();
-        } else {
-            this.chunks[0] = chunk.subarray(len);
-        }
+      const chunk = this.chunks[0];
+      const remaining = size - copied;
+      const len = Math.min(chunk.length, remaining);
+      chunk.copy(ret, copied, 0, len);
+      copied += len;
+      if (len === chunk.length) {
+        this.chunks.shift();
+      } else {
+        this.chunks[0] = chunk.subarray(len);
+      }
     }
     this.bufferLength -= size;
     return ret;
