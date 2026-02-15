@@ -23,6 +23,18 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Install Rust + wasm-pack + binaryen
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --target wasm32-unknown-unknown
+          source "$HOME/.cargo/env"
+          cargo install wasm-pack
+          sudo apt-get update && sudo apt-get install -y binaryen
+
+      - name: Build WASM
+        run: |
+          source "$HOME/.cargo/env"
+          pnpm build:wasm
+
       - name: Type check
         run: pnpm type-check
 

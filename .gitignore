@@ -10,7 +10,10 @@ coverage/
 
 # Rust build artifacts
 **/target/
-src/socket/wasm-pkg/target/
+
+# WASM build output (compiled from Rust via build:wasm)
+src/socket/wasm-pkg/
+!src/socket/wasm-pkg/.gitkeep
 
 # Wrangler
 .wrangler/

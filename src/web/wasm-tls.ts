@@ -153,7 +153,7 @@ function createSession(rawSocket: RawSocket, tls: TlsConnection): WasmTlsSocket 
     try {
       while (!_closed) {
         const { done, value } = await rawSocket.read();
-        if (done) {
+        if (done || _closed) {
           _closed = true;
           resolveWaiter({ done: true, value: undefined });
           return;
@@ -236,6 +236,8 @@ function createSession(rawSocket: RawSocket, tls: TlsConnection): WasmTlsSocket 
           tls.send_close_notify();
           const out = tls.flush_outgoing_tls();
           if (out.length > 0) {
+            // Best-effort: close_notify data is already in `out` (independent of tls object).
+            // We don't await — tls.free() and rawSocket.close() proceed immediately.
             rawSocket.write(out).catch(() => {});
           }
         } catch {

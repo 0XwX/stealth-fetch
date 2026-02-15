@@ -826,6 +826,10 @@ export function normalizeHeaders(
   const entries = headers instanceof Headers ? headers.entries() : Object.entries(headers);
   for (const [key, value] of entries) {
     const lk = key.toLowerCase();
+    // Filter headers managed by the library:
+    // - content-length: auto-calculated from body (may be incorrect if user-provided)
+    // - accept-encoding: auto-set based on decompress option
+    // - cf-*/x-forwarded-*/host/connection/etc: proxy/hop-by-hop headers
     if (
       lk.startsWith("cf-") ||
       lk.startsWith("x-forwarded-") ||
@@ -890,11 +894,7 @@ function isOriginChange(from: ParsedUrl, to: ParsedUrl): boolean {
 }
 
 async function consumeAndDiscard(response: HttpResponse): Promise<void> {
-  const reader = response.body.getReader();
-  while (true) {
-    const { done } = await reader.read();
-    if (done) break;
-  }
+  await response.body.cancel();
 }
 
 function throwIfAborted(signal: AbortSignal): void {
