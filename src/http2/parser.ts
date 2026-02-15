@@ -23,7 +23,8 @@ const enum ParserState {
  */
 export class FrameParser extends EventEmitter {
   private state: ParserState = ParserState.FRAME_HEAD;
-  private buffer: Buffer = Buffer.alloc(0);
+  private chunks: Buffer[] = [];
+  private bufferLength: number = 0;
   private maxFrameSize: number;
   private errored = false;
 
@@ -47,24 +48,29 @@ export class FrameParser extends EventEmitter {
   feed(data: Buffer | Uint8Array): void {
     if (this.errored) return;
     const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
-    this.buffer = this.buffer.length > 0 ? Buffer.concat([this.buffer, buf]) : buf;
+    if (buf.length === 0) return;
+
+    this.chunks.push(buf);
+    this.bufferLength += buf.length;
     this.process();
   }
 
   private process(): void {
     while (true) {
       if (this.state === ParserState.FRAME_HEAD) {
-        if (this.buffer.length < FRAME_HEADER_SIZE) return;
+        if (this.bufferLength < FRAME_HEADER_SIZE) return;
 
         // Parse 9-byte frame header
-        this.frameLength = (this.buffer[0] << 16) | (this.buffer[1] << 8) | this.buffer[2];
-        this.frameType = this.buffer[3] as FrameType;
-        this.frameFlags = this.buffer[4];
+        const header = this.read(FRAME_HEADER_SIZE);
+
+        this.frameLength = (header[0] << 16) | (header[1] << 8) | header[2];
+        this.frameType = header[3] as FrameType;
+        this.frameFlags = header[4];
         this.frameStreamId =
-          ((this.buffer[5] & 0x7f) << 24) |
-          (this.buffer[6] << 16) |
-          (this.buffer[7] << 8) |
-          this.buffer[8];
+          ((header[5] & 0x7f) << 24) |
+          (header[6] << 16) |
+          (header[7] << 8) |
+          header[8];
 
         // Validate frame size
         if (this.frameLength > this.maxFrameSize) {
@@ -76,26 +82,64 @@ export class FrameParser extends EventEmitter {
           return;
         }
 
-        this.buffer = this.buffer.subarray(FRAME_HEADER_SIZE);
         this.state = ParserState.FRAME_BODY;
       }
 
       if (this.state === ParserState.FRAME_BODY) {
-        if (this.buffer.length < this.frameLength) return;
+        if (this.bufferLength < this.frameLength) return;
 
-        const payload = this.buffer.subarray(0, this.frameLength);
-        this.buffer = this.buffer.subarray(this.frameLength);
+        const payload = this.read(this.frameLength);
 
         const frame: Frame = {
           type: this.frameType,
           flags: this.frameFlags,
           streamId: this.frameStreamId,
-          payload: Buffer.from(payload), // copy to avoid subarray issues
+          payload: payload,
         };
 
         this.state = ParserState.FRAME_HEAD;
         this.emit("frame", frame);
       }
     }
+  }
+
+  /**
+   * Consume `size` bytes from the chunks queue.
+   * Assumes `this.bufferLength >= size`.
+   */
+  private read(size: number): Buffer {
+    if (size === 0) return Buffer.alloc(0);
+
+    // Optimization: if first chunk has enough data
+    if (this.chunks.length > 0 && this.chunks[0].length >= size) {
+        const chunk = this.chunks[0];
+        // Create a view, no copy
+        const ret = chunk.subarray(0, size);
+        if (chunk.length === size) {
+            this.chunks.shift();
+        } else {
+            this.chunks[0] = chunk.subarray(size);
+        }
+        this.bufferLength -= size;
+        return ret;
+    }
+
+    // Slow path: spans multiple chunks
+    const ret = Buffer.allocUnsafe(size);
+    let copied = 0;
+    while (copied < size) {
+        const chunk = this.chunks[0];
+        const remaining = size - copied;
+        const len = Math.min(chunk.length, remaining);
+        chunk.copy(ret, copied, 0, len);
+        copied += len;
+        if (len === chunk.length) {
+            this.chunks.shift();
+        } else {
+            this.chunks[0] = chunk.subarray(len);
+        }
+    }
+    this.bufferLength -= size;
+    return ret;
   }
 }
