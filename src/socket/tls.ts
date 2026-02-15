@@ -9,9 +9,10 @@ import { WasmTlsSocketAdapter } from "./wasm-tls-adapter.js";
 export async function createTLSSocket(
   hostname: string,
   port: number = 443,
+  signal?: AbortSignal,
 ): Promise<CloudflareSocketAdapter> {
   const socket = new CloudflareSocketAdapter({ hostname, port, tls: true });
-  await socket.connect();
+  await socket.connect(signal);
   return socket;
 }
 
@@ -19,9 +20,10 @@ export async function createTLSSocket(
 export async function createPlainSocket(
   hostname: string,
   port: number = 80,
+  signal?: AbortSignal,
 ): Promise<CloudflareSocketAdapter> {
   const socket = new CloudflareSocketAdapter({ hostname, port, tls: false });
-  await socket.connect();
+  await socket.connect(signal);
   return socket;
 }
 
@@ -30,9 +32,10 @@ export async function createSocket(
   hostname: string,
   port: number,
   tls: boolean,
+  signal?: AbortSignal,
 ): Promise<CloudflareSocketAdapter> {
   const socket = new CloudflareSocketAdapter({ hostname, port, tls });
-  await socket.connect();
+  await socket.connect(signal);
   return socket;
 }
 

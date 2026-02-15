@@ -175,8 +175,12 @@ export async function preconnect(hostname: string, port: number = 443): Promise<
 
 export interface PrewarmDnsOptions {
   /**
-   * Max parallel DNS warmups.
-   * Keep this small in Workers to avoid spiky fan-out.
+   * Max parallel DNS warmups (default: 4, max: 16).
+   *
+   * Each hostname triggers 1 fetch subrequest (A record via DoH).
+   * These count toward Workers' 6 simultaneous open connections limit
+   * (shared with fetch, sockets, KV, Cache, R2, Queues).
+   * Keep this low to leave headroom for the actual request's socket connections.
    */
   concurrency?: number;
   /** Optional cancellation signal */
@@ -188,6 +192,10 @@ export interface PrewarmDnsOptions {
 /**
  * Warm DNS/CF-detection cache for a set of hostnames.
  * Useful for latency-sensitive cold starts.
+ *
+ * Each hostname costs 1 fetch subrequest (A record DNS-over-HTTPS query),
+ * which shares Workers' 6 simultaneous connection limit with sockets and other APIs.
+ * Results are cached (TTL 30s–5min), so repeated calls within the TTL are free.
  */
 export async function prewarmDns(
   hostnames: readonly string[],
@@ -461,7 +469,7 @@ async function resolveAndCheckCloudflareCached(hostname: string): Promise<CfChec
     } catch {
       // DoH failure (timeout, network error) → degrade to unknown, proceed with direct connection
       console.debug(`[dns] DoH failed for ${key}, degrading to direct`);
-      const degraded: CfCheckResult = { isCf: false, ipv4: null, ipv6: null, dnsMs: 0, ttl: 0 };
+      const degraded: CfCheckResult = { isCf: false, ipv4: null, dnsMs: 0, ttl: 0 };
       setCachedDns(key, degraded);
       return degraded;
     } finally {
@@ -1343,7 +1351,10 @@ async function http11RequestWithConnect(
   signal: AbortSignal,
 ): Promise<HttpResponse> {
   throwIfAborted(signal);
-  const socket = await createSocket(parsed.hostname, parsed.port, tls);
+  const socket = await abortableConnect(
+    () => createSocket(parsed.hostname, parsed.port, tls, signal),
+    signal,
+  );
 
   const onAbort = () => socket.destroy();
   signal.addEventListener("abort", onAbort, { once: true });

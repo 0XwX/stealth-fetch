@@ -24,16 +24,3 @@ export const CF_IPV4_RANGES: ReadonlyArray<readonly [number, number]> = (() => {
     [toU32("131.0.72.0"), toU32("131.0.75.255")], // /22
   ] as const;
 })();
-
-/**
- * CF IPv6 prefixes (first 32 bits).
- * All CF IPv6 ranges are /32 or larger, so prefix matching is sufficient.
- */
-export const CF_IPV6_PREFIXES = [
-  "2400:cb00", // 2400:cb00::/32
-  "2606:4700", // 2606:4700::/32
-  "2803:f800", // 2803:f800::/32
-  "2405:8100", // 2405:8100::/32
-  "2a06:98c0", // 2a06:98c0::/29
-  "2c0f:f248", // 2c0f:f248::/32
-] as const;

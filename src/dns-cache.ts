@@ -1,6 +1,6 @@
 /**
  * V8 isolate-level DNS cache for CF CDN detection results.
- * Caches resolveAndCheckCloudflare() results (IPv4/IPv6 + isCf flag)
+ * Caches resolveAndCheckCloudflare() results (IPv4 + isCf flag)
  * to avoid repeated DoH queries for the same hostname.
  *
  * Uses the same LRU pattern as protocol-cache.ts (Map delete+re-insert).
@@ -11,7 +11,6 @@ import type { CfCheckResult } from "./socket/nat64.js";
 
 interface DnsCacheEntry {
   ipv4: string | null;
-  ipv6: string | null;
   isCf: boolean;
   expiresAt: number;
   dnsMs: number;
@@ -43,7 +42,6 @@ export function getCachedDns(hostname: string): CfCheckResult | null {
   return {
     isCf: entry.isCf,
     ipv4: entry.ipv4,
-    ipv6: entry.ipv6,
     dnsMs: 0, // cached — no actual DNS query
     ttl: Math.max(0, Math.round((entry.expiresAt - Date.now()) / 1000)),
   };
@@ -66,7 +64,6 @@ export function setCachedDns(hostname: string, result: CfCheckResult): void {
 
   cache.set(hostname, {
     ipv4: result.ipv4,
-    ipv6: result.ipv6,
     isCf: result.isCf,
     expiresAt: Date.now() + ttlMs,
     dnsMs: result.dnsMs,

@@ -1,11 +1,16 @@
 /**
- * V8 isolate-level HTTP/2 connection pool.
+ * Opportunistic isolate-level HTTP/2 connection pool.
+ *
  * Reuses H2 connections to the same origin, leveraging HTTP/2 stream
  * multiplexing to avoid redundant TCP + TLS + SETTINGS handshakes.
  *
- * Pool lives in the global scope of the V8 isolate.
- * CF Workers may reuse isolates across requests, so pooled connections
- * persist for the isolate's lifetime (subject to idle timeout).
+ * Connections are created during request processing (never in global scope)
+ * and stored in this module-level Map for potential reuse by subsequent
+ * requests within the same V8 isolate. Isolate reuse is not guaranteed —
+ * pool hits are an opportunistic speedup, not a correctness requirement.
+ *
+ * Safeguards: 60s idle TTL, GOAWAY auto-eviction, capacity checks,
+ * and automatic fallback to fresh connections when pooled ones fail.
  */
 import type { Http2Client } from "./http2/client.js";
 

@@ -6,7 +6,7 @@
  * Prefixes verified via RFC 7050 (querying DNS64 servers for ipv4only.arpa).
  */
 
-import { CF_IPV4_RANGES, CF_IPV6_PREFIXES } from "./cloudflare-ranges.js";
+import { CF_IPV4_RANGES } from "./cloudflare-ranges.js";
 
 /**
  * NAT64 /96 prefixes, ordered by reliability.
@@ -64,7 +64,7 @@ interface DnsJsonResponse {
 
 async function dohQuery(
   name: string,
-  type: "A" | "AAAA",
+  type: "A",
   signal?: AbortSignal,
 ): Promise<DnsJsonResponse | null> {
   try {
@@ -165,56 +165,39 @@ export function isCloudflareIPv4(ipv4: string): boolean {
   return CF_IPV4_RANGES.some(([start, end]) => num >= start && num <= end);
 }
 
-export function isCloudflareIPv6(ipv6: string): boolean {
-  const lower = ipv6.toLowerCase();
-  return CF_IPV6_PREFIXES.some(prefix => lower.startsWith(prefix));
-}
-
 export interface CfCheckResult {
   isCf: boolean;
   ipv4: string | null;
-  ipv6: string | null;
   dnsMs: number;
-  /** Minimum TTL from A/AAAA records (seconds). 0 if no records found. */
+  /** TTL from A record (seconds). 0 if no record found. */
   ttl: number;
 }
 
 /**
- * Resolve hostname via DoH (parallel A + AAAA), check if IP is in CF ranges.
+ * Resolve hostname via DoH (A record only), check if IP is in CF ranges.
  * Used to pre-detect CF CDN targets that need NAT64 bypass.
+ *
+ * Only queries A records — the IPv4 is needed for NAT64 conversion and
+ * isCloudflareIPv4() is sufficient for CF detection. Skipping AAAA saves
+ * one fetch subrequest per hostname from the shared 6-connection budget.
  */
 export async function resolveAndCheckCloudflare(hostname: string): Promise<CfCheckResult> {
   const t0 = Date.now();
-  const dnsSignal = AbortSignal.timeout(3000);
-  const [aData, aaaaData] = await Promise.all([
-    dohQuery(hostname, "A", dnsSignal),
-    dohQuery(hostname, "AAAA", dnsSignal),
-  ]);
+  const aData = await dohQuery(hostname, "A", AbortSignal.timeout(3000));
   const dnsMs = Date.now() - t0;
 
   let ipv4: string | null = null;
-  let ipv6: string | null = null;
   let isCf = false;
-  const ttls: number[] = [];
+  let ttl = 0;
 
   if (aData) {
     const aRecord = aData.Answer?.find(r => r.type === 1);
     if (aRecord) {
       ipv4 = aRecord.data;
-      ttls.push(aRecord.TTL);
+      ttl = aRecord.TTL;
       if (isCloudflareIPv4(ipv4)) isCf = true;
     }
   }
 
-  if (aaaaData) {
-    const aaaaRecord = aaaaData.Answer?.find(r => r.type === 28);
-    if (aaaaRecord) {
-      ipv6 = aaaaRecord.data;
-      ttls.push(aaaaRecord.TTL);
-      if (isCloudflareIPv6(ipv6)) isCf = true;
-    }
-  }
-
-  const ttl = ttls.length > 0 ? Math.min(...ttls) : 0;
-  return { isCf, ipv4, ipv6, dnsMs, ttl };
+  return { isCf, ipv4, dnsMs, ttl };
 }

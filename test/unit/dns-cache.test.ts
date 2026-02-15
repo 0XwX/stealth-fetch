@@ -13,7 +13,6 @@ describe("dns-cache", () => {
     setCachedDns("cached.dns.test", {
       isCf: true,
       ipv4: "104.16.0.1",
-      ipv6: "2606:4700::1",
       dnsMs: 5,
       ttl: 300,
     });
@@ -21,7 +20,6 @@ describe("dns-cache", () => {
     expect(result).not.toBeNull();
     expect(result!.isCf).toBe(true);
     expect(result!.ipv4).toBe("104.16.0.1");
-    expect(result!.ipv6).toBe("2606:4700::1");
     expect(result!.dnsMs).toBe(0); // cached hit returns 0
   });
 
@@ -31,7 +29,6 @@ describe("dns-cache", () => {
       setCachedDns("ttl.dns.test", {
         isCf: false,
         ipv4: "1.2.3.4",
-        ipv6: null,
         dnsMs: 3,
         ttl: 60, // 60s → clamped to MIN_TTL 30s
       });
@@ -51,7 +48,6 @@ describe("dns-cache", () => {
       setCachedDns("min-ttl.dns.test", {
         isCf: false,
         ipv4: "1.2.3.4",
-        ipv6: null,
         dnsMs: 2,
         ttl: 1, // 1s → clamped to 30s
       });
@@ -74,7 +70,6 @@ describe("dns-cache", () => {
       setCachedDns("max-ttl.dns.test", {
         isCf: false,
         ipv4: "1.2.3.4",
-        ipv6: null,
         dnsMs: 2,
         ttl: 86400, // 1 day → clamped to 5min
       });
@@ -96,7 +91,6 @@ describe("dns-cache", () => {
       setCachedDns(`evict-${i}.dns.test`, {
         isCf: false,
         ipv4: "1.2.3.4",
-        ipv6: null,
         dnsMs: 1,
         ttl: 300,
       });
@@ -105,7 +99,6 @@ describe("dns-cache", () => {
     setCachedDns("evict-new.dns.test", {
       isCf: true,
       ipv4: "104.16.0.1",
-      ipv6: null,
       dnsMs: 1,
       ttl: 300,
     });
@@ -117,7 +110,6 @@ describe("dns-cache", () => {
     setCachedDns("clear.dns.test", {
       isCf: false,
       ipv4: "1.2.3.4",
-      ipv6: null,
       dnsMs: 1,
       ttl: 300,
     });
@@ -133,7 +125,6 @@ describe("dns-cache", () => {
       setCachedDns("doh-fail.dns.test", {
         isCf: false,
         ipv4: null,
-        ipv6: null,
         dnsMs: 0,
         ttl: 0,
       });
@@ -161,7 +152,6 @@ describe("dns-cache", () => {
       setCachedDns("ttl-remaining.dns.test", {
         isCf: false,
         ipv4: "1.2.3.4",
-        ipv6: null,
         dnsMs: 5,
         ttl: 120,
       });

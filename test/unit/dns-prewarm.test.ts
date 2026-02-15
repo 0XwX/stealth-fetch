@@ -30,27 +30,19 @@ describe("prewarmDns", () => {
   });
 
   it("should dedupe hostnames before warming", async () => {
-    vi.mocked(fetch).mockImplementation(async input => {
-      const url = input.toString();
-      if (url.includes("type=AAAA")) {
-        return dnsJsonResponse([{ type: 28, data: "2606:4700::1", TTL: 300 }]) as Response;
-      }
-      return dnsJsonResponse([{ type: 1, data: "104.16.0.1", TTL: 300 }]) as Response;
-    });
+    vi.mocked(fetch).mockResolvedValue(
+      dnsJsonResponse([{ type: 1, data: "104.16.0.1", TTL: 300 }]) as Response,
+    );
 
     await prewarmDns(["Example.com", "example.com", "foo.com"], { concurrency: 8 });
 
-    // 2 unique hosts * (A + AAAA)
-    expect(fetch).toHaveBeenCalledTimes(4);
+    // 2 unique hosts * 1 A query each
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 
   it("should use singleflight across concurrent warmups for same host", async () => {
-    vi.mocked(fetch).mockImplementation(async input => {
-      const url = input.toString();
+    vi.mocked(fetch).mockImplementation(async () => {
       await new Promise(resolve => setTimeout(resolve, 15));
-      if (url.includes("type=AAAA")) {
-        return dnsJsonResponse([{ type: 28, data: "2606:4700::1", TTL: 120 }]) as Response;
-      }
       return dnsJsonResponse([{ type: 1, data: "104.16.0.1", TTL: 120 }]) as Response;
     });
 
@@ -59,8 +51,8 @@ describe("prewarmDns", () => {
       prewarmDns(["SINGLEFLIGHT.example"], { concurrency: 1 }),
     ]);
 
-    // single lookup for one hostname => A + AAAA only once
-    expect(fetch).toHaveBeenCalledTimes(2);
+    // single lookup for one hostname => 1 A query only once
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it("should throw when cancelled", async () => {

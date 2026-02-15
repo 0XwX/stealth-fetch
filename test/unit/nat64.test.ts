@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   ipv4ToNAT64,
   isCloudflareIPv4,
-  isCloudflareIPv6,
   resolveIPv4,
   resolveAndCheckCloudflare,
 } from "../../src/socket/nat64.js";
@@ -60,17 +59,6 @@ describe("isCloudflareIPv4", () => {
   });
 });
 
-describe("isCloudflareIPv6", () => {
-  it("should identify Cloudflare IPv6 addresses", () => {
-    expect(isCloudflareIPv6("2400:cb00:1::1")).toBe(true);
-    expect(isCloudflareIPv6("2606:4700:1::1")).toBe(true);
-  });
-
-  it("should not identify non-Cloudflare IPv6 addresses", () => {
-    expect(isCloudflareIPv6("2001:4860:4860::8888")).toBe(false);
-  });
-});
-
 describe("DNS resolution", () => {
   beforeEach(() => {
     vi.stubGlobal("fetch", vi.fn());
@@ -117,32 +105,21 @@ describe("DNS resolution", () => {
   });
 
   describe("resolveAndCheckCloudflare", () => {
-    it("should detect Cloudflare IP", async () => {
-      vi.mocked(fetch).mockImplementation(async url => {
-        const u = url.toString();
-        if (u.includes("type=AAAA")) {
-          return {
-            ok: true,
-            json: async () => ({
-              Answer: [{ type: 28, data: "2606:4700::1", TTL: 300 }],
-            }),
-          } as any;
-        }
-        if (u.includes("type=A")) {
-          return {
-            ok: true,
-            json: async () => ({
-              Answer: [{ type: 1, data: "104.16.0.1", TTL: 300 }],
-            }),
-          } as any;
-        }
-        return { ok: false } as any;
-      });
+    it("should detect Cloudflare IP via A record", async () => {
+      vi.mocked(fetch).mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          Answer: [{ type: 1, data: "104.16.0.1", TTL: 300 }],
+        }),
+      } as any);
 
       const result = await resolveAndCheckCloudflare("example.com");
       expect(result.isCf).toBe(true);
       expect(result.ipv4).toBe("104.16.0.1");
-      expect(result.ipv6).toBe("2606:4700::1");
+      expect(result.ttl).toBe(300);
+      // Only A query, no AAAA
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(fetch).toHaveBeenCalledWith(expect.stringContaining("type=A"), expect.any(Object));
     });
   });
 });

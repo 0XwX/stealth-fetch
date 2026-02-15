@@ -39,8 +39,12 @@ export class CloudflareSocketAdapter extends Duplex {
   /**
    * Establish the underlying cloudflare:sockets connection.
    * Must be called before using the stream.
+   * @param signal Optional AbortSignal — if aborted before TCP connects,
+   *   the socket is torn down and the signal's reason is thrown.
    */
-  async connect(): Promise<void> {
+  async connect(signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) throw signal.reason;
+
     const { connect } = await import("cloudflare:sockets");
 
     const address = { hostname: this.hostname, port: this.port };
@@ -53,6 +57,46 @@ export class CloudflareSocketAdapter extends Duplex {
       : connect(address);
     this.writer = this.cfSocket.writable.getWriter();
     this.reader = this.cfSocket.readable.getReader();
+
+    // Wait for TCP connection to actually establish.
+    // Without this, connection failures (e.g. unreachable host) would only
+    // surface on the first _write() call instead of failing fast here.
+    // 30s timeout guards against silent SYN drops (firewall black-holes)
+    // where the OS never gets a RST and opened hangs indefinitely.
+    let connectTimer: ReturnType<typeof setTimeout> | undefined;
+    let onSignalAbort: (() => void) | undefined;
+
+    const racePromises: Promise<unknown>[] = [
+      this.cfSocket.opened,
+      new Promise<never>((_, reject) => {
+        connectTimer = setTimeout(
+          () => reject(new Error(`TCP connect timeout (${this.hostname}:${this.port})`)),
+          30_000,
+        );
+      }),
+    ];
+    if (signal) {
+      racePromises.push(
+        new Promise<never>((_, reject) => {
+          if (signal.aborted) {
+            reject(signal.reason);
+            return;
+          }
+          onSignalAbort = () => reject(signal.reason);
+          signal.addEventListener("abort", onSignalAbort, { once: true });
+        }),
+      );
+    }
+    try {
+      await Promise.race(racePromises);
+    } catch (err) {
+      // opened failed or timed out or aborted — clean up resources
+      this.destroy();
+      throw err;
+    } finally {
+      clearTimeout(connectTimer);
+      if (onSignalAbort) signal!.removeEventListener("abort", onSignalAbort);
+    }
     this.connected = true;
 
     // Monitor socket closure

@@ -82,7 +82,7 @@ describe("Http2Client", () => {
 
       const client = await Http2Client.connect("example.com", 80, false);
 
-      expect(createPlainSocket).toHaveBeenCalledWith("example.com", 80);
+      expect(createPlainSocket).toHaveBeenCalledWith("example.com", 80, undefined);
       expect(Http2Connection).toHaveBeenCalledWith(mockSocket, {});
       expect(client).toBeInstanceOf(Http2Client);
     });

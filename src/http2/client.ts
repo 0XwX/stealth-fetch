@@ -66,7 +66,7 @@ export class Http2Client {
   ): Promise<Http2Client> {
     const socket = tls
       ? await createWasmTLSSocket(hostname, port, ["h2"], connectHostname, signal)
-      : await createPlainSocket(connectHostname ?? hostname, port);
+      : await createPlainSocket(connectHostname ?? hostname, port, signal);
 
     const connection = new Http2Connection(socket, options);
     await connection.startInitialize();

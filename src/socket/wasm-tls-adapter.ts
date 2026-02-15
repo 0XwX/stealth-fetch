@@ -46,7 +46,7 @@ export class WasmTlsSocketAdapter extends Duplex {
       port: this.port,
       tls: false, // Critical: no CF built-in TLS
     });
-    await this.rawSocket.connect();
+    await this.rawSocket.connect(signal);
 
     // 2. Perform TLS handshake via WASM (with signal for abort support)
     this.tlsSession = await performTlsHandshake(

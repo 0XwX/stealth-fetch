@@ -27,7 +27,7 @@ WASM_FILE="$OUTPUT_DIR/wasm_tls_bg.wasm"
 if command -v wasm-opt &>/dev/null && [ -f "$WASM_FILE" ]; then
   PRE_OPT=$(wc -c < "$WASM_FILE" | tr -d ' ')
   echo "Running wasm-opt -Oz (pre: ${PRE_OPT} bytes)..."
-  wasm-opt -Oz --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals "$WASM_FILE" -o "$WASM_FILE.opt"
+  wasm-opt -Oz --converge --strip-producers --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals "$WASM_FILE" -o "$WASM_FILE.opt"
   mv "$WASM_FILE.opt" "$WASM_FILE"
   POST_OPT=$(wc -c < "$WASM_FILE" | tr -d ' ')
   echo "wasm-opt: ${PRE_OPT} -> ${POST_OPT} bytes (saved $(( PRE_OPT - POST_OPT )) bytes)"
