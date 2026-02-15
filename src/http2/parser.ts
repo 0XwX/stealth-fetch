@@ -94,7 +94,7 @@ export class FrameParser extends EventEmitter {
           type: this.frameType,
           flags: this.frameFlags,
           streamId: this.frameStreamId,
-          payload: payload,
+          payload,
         };
 
         this.state = ParserState.FRAME_HEAD;
