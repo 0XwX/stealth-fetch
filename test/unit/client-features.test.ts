@@ -142,6 +142,16 @@ describe("normalizeHeaders", () => {
     // Headers.forEach merges with ", " per Web API spec
     expect(result["accept"]).toBe("text/html, application/json");
   });
+
+  it("should handle array of entries (HeadersInit)", () => {
+    const headers = [
+      ["Content-Type", "application/json"],
+      ["X-Custom", "value"],
+    ];
+    const result = normalizeHeaders(headers);
+    expect(result["content-type"]).toBe("application/json");
+    expect(result["x-custom"]).toBe("value");
+  });
 });
 
 describe("ReadableStream body input validation", () => {
