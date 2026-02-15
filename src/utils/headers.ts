@@ -51,6 +51,28 @@ export function mergeHeaders(
 
 const INVALID_HEADER_CHAR_RE = /[\r\n\0]/;
 
+// RFC 7230 3.2.6. Field Value Components: token = 1*tchar
+// tchar = "!" / "#" / "$" / "%" / "&" / "'" / "*" / "+" / "-" / "." / "^" / "_" / "`" / "|" / "~" / DIGIT / ALPHA
+const TOKEN_RE = /^[a-zA-Z0-9!#$%&'*+.^_`|~-]+$/;
+
+/**
+ * Validate header name against RFC 7230 token characters.
+ */
+export function validateHeaderName(name: string): void {
+  if (!TOKEN_RE.test(name)) {
+    throw new Error(`Invalid header name: ${JSON.stringify(name)} contains invalid characters`);
+  }
+}
+
+/**
+ * Validate header value against CR/LF/NUL injection.
+ */
+export function validateHeaderValue(name: string, value: string): void {
+  if (INVALID_HEADER_CHAR_RE.test(value)) {
+    throw new Error(`Invalid header value for "${name}": contains CR/LF/NUL`);
+  }
+}
+
 /**
  * Serialize headers into HTTP/1.1 format: "Key: Value\r\n"
  * Validates against header injection (CR/LF/NUL).
@@ -58,17 +80,12 @@ const INVALID_HEADER_CHAR_RE = /[\r\n\0]/;
 export function serializeHttp1Headers(headers: Record<string, string>): string {
   let result = "";
   for (const [key, value] of Object.entries(headers)) {
-    if (INVALID_HEADER_CHAR_RE.test(key) || INVALID_HEADER_CHAR_RE.test(value)) {
-      throw new Error(`Invalid header: contains CR/LF/NUL in "${key}"`);
-    }
+    validateHeaderName(key);
+    validateHeaderValue(key, value);
     result += `${key}: ${value}\r\n`;
   }
   return result;
 }
-
-// RFC 7230 3.2.6. Field Value Components: token = 1*tchar
-// tchar = "!" / "#" / "$" / "%" / "&" / "'" / "*" / "+" / "-" / "." / "^" / "_" / "`" / "|" / "~" / DIGIT / ALPHA
-const TOKEN_RE = /^[a-zA-Z0-9!#$%&'*+.^_`|~-]+$/;
 
 /**
  * Validate HTTP method to prevent CRLF injection and ensure valid token characters.
