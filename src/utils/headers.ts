@@ -103,7 +103,12 @@ export function normalizeHeaders(headers?: HeadersInit): Record<string, string> 
       ? headers.entries()
       : Array.isArray(headers)
         ? headers.map(pair => {
-            if (!Array.isArray(pair) || pair.length !== 2) {
+            if (
+              !Array.isArray(pair) ||
+              pair.length !== 2 ||
+              typeof pair[0] !== "string" ||
+              typeof pair[1] !== "string"
+            ) {
               throw new Error(
                 `Invalid header entry: expected [string, string], got ${JSON.stringify(pair)}`,
               );
