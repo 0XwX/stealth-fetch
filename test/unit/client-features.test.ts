@@ -144,13 +144,46 @@ describe("normalizeHeaders", () => {
   });
 
   it("should handle array of entries (HeadersInit)", () => {
-    const headers = [
+    const headers: [string, string][] = [
       ["Content-Type", "application/json"],
       ["X-Custom", "value"],
     ];
     const result = normalizeHeaders(headers);
     expect(result["content-type"]).toBe("application/json");
     expect(result["x-custom"]).toBe("value");
+  });
+
+  it("should accept empty array", () => {
+    expect(normalizeHeaders([])).toEqual({});
+  });
+
+  it("should use last value for duplicate keys in array format", () => {
+    const headers: [string, string][] = [
+      ["X-Key", "first"],
+      ["X-Key", "second"],
+    ];
+    const result = normalizeHeaders(headers);
+    expect(result["x-key"]).toBe("second");
+  });
+
+  it("should reject array entry with wrong length", () => {
+    const headers = [["Only-Key"]] as unknown as [string, string][];
+    expect(() => normalizeHeaders(headers)).toThrow(/Invalid header entry/);
+  });
+
+  it("should reject array entry with too many elements", () => {
+    const headers = [["A", "B", "C"]] as unknown as [string, string][];
+    expect(() => normalizeHeaders(headers)).toThrow(/Invalid header entry/);
+  });
+
+  it("should reject injection characters in array format", () => {
+    const headers: [string, string][] = [["X-Evil", "value\r\nInjected: yes"]];
+    expect(() => normalizeHeaders(headers)).toThrow(/Invalid header value/);
+  });
+
+  it("should reject invalid header name in array format", () => {
+    const headers: [string, string][] = [["Bad Name", "value"]];
+    expect(() => normalizeHeaders(headers)).toThrow(/Invalid header name/);
   });
 });
 

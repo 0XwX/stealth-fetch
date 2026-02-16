@@ -87,6 +87,56 @@ export function serializeHttp1Headers(headers: Record<string, string>): string {
   return result;
 }
 
+/** Headers input accepted by the public API. */
+export type HeadersInit = Record<string, string> | Headers | [string, string][];
+
+/**
+ * Normalize user-supplied headers into a flat lowercase Record.
+ * Strips Cloudflare-injected, proxy, and hop-by-hop headers so they
+ * are never forwarded upstream.
+ */
+export function normalizeHeaders(headers?: HeadersInit): Record<string, string> {
+  if (!headers) return {};
+  const result: Record<string, string> = {};
+  const entries: Iterable<[string, string]> =
+    headers instanceof Headers
+      ? headers.entries()
+      : Array.isArray(headers)
+        ? headers.map(pair => {
+            if (!Array.isArray(pair) || pair.length !== 2) {
+              throw new Error(
+                `Invalid header entry: expected [string, string], got ${JSON.stringify(pair)}`,
+              );
+            }
+            return pair as [string, string];
+          })
+        : Object.entries(headers);
+
+  for (const [key, value] of entries) {
+    validateHeaderName(key);
+    validateHeaderValue(key, value);
+
+    const lk = key.toLowerCase();
+    if (
+      lk.startsWith("cf-") ||
+      lk.startsWith("x-forwarded-") ||
+      lk === "x-real-ip" ||
+      lk === "true-client-ip" ||
+      lk === "cdn-loop" ||
+      lk === "host" ||
+      lk === "connection" ||
+      lk === "transfer-encoding" ||
+      lk === "keep-alive" ||
+      lk === "accept-encoding" ||
+      lk === "content-length"
+    ) {
+      continue;
+    }
+    result[lk] = value;
+  }
+  return result;
+}
+
 /**
  * Validate HTTP method to prevent CRLF injection and ensure valid token characters.
  */

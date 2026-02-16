@@ -10,6 +10,8 @@ import { EventEmitter } from "node:events";
 import { FrameType, FRAME_HEADER_SIZE, DEFAULT_MAX_FRAME_SIZE } from "./constants.js";
 import type { Frame } from "./framer.js";
 
+const EMPTY_BUF = Buffer.alloc(0);
+
 const enum ParserState {
   FRAME_HEAD,
   FRAME_BODY,
@@ -105,7 +107,7 @@ export class FrameParser extends EventEmitter {
    * Assumes `this.bufferLength >= size`.
    */
   private read(size: number): Buffer {
-    if (size === 0) return Buffer.alloc(0);
+    if (size === 0) return EMPTY_BUF;
 
     // Optimization: if first chunk has enough data
     if (this.chunks.length > 0 && this.chunks[0].length >= size) {
