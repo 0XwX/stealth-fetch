@@ -110,8 +110,8 @@ export class FrameParser extends EventEmitter {
     // Optimization: if first chunk has enough data
     if (this.chunks.length > 0 && this.chunks[0].length >= size) {
       const chunk = this.chunks[0];
-      // Create a view, no copy
-      const ret = chunk.subarray(0, size);
+      // Copy to avoid consumers mutating the original buffer
+      const ret = Buffer.from(chunk.subarray(0, size));
       if (chunk.length === size) {
         this.chunks.shift();
       } else {
