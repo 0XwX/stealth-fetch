@@ -3,6 +3,7 @@
  * Simplified from src/client.ts: no H2, no connection pool, no protocol cache.
  */
 import { parseUrl, type ParsedUrl } from "../utils/url.js";
+import { validateHeaderName, validateHeaderValue } from "../utils/headers.js";
 import { createRawSocket, type RawSocket } from "./raw-socket.js";
 import { connectWasmTls, preloadWasmTls, type WasmTlsSocket } from "./wasm-tls.js";
 import { http1Request } from "./http1/client.js";
@@ -825,6 +826,9 @@ export function normalizeHeaders(
   const result: Record<string, string> = {};
   const entries = headers instanceof Headers ? headers.entries() : Object.entries(headers);
   for (const [key, value] of entries) {
+    validateHeaderName(key);
+    validateHeaderValue(key, value);
+
     const lk = key.toLowerCase();
     // Filter headers managed by the library:
     // - content-length: auto-calculated from body (may be incorrect if user-provided)
