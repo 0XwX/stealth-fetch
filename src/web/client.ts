@@ -3,6 +3,7 @@
  * Simplified from src/client.ts: no H2, no connection pool, no protocol cache.
  */
 import { parseUrl, type ParsedUrl } from "../utils/url.js";
+import { normalizeHeaders, type HeaderInput } from "../utils/headers.js";
 import { createRawSocket, type RawSocket } from "./raw-socket.js";
 import { connectWasmTls, preloadWasmTls, type WasmTlsSocket } from "./wasm-tls.js";
 import { http1Request } from "./http1/client.js";
@@ -28,7 +29,7 @@ export interface RetryOptions {
 
 export interface RequestOptions {
   method?: string;
-  headers?: Record<string, string> | Headers;
+  headers?: HeaderInput;
   body?: Uint8Array | string | ReadableStream<Uint8Array> | null;
   timeout?: number;
   headersTimeout?: number;
@@ -818,37 +819,8 @@ async function abortableConnect<T>(
   });
 }
 
-export function normalizeHeaders(
-  headers?: Record<string, string> | Headers,
-): Record<string, string> {
-  if (!headers) return {};
-  const result: Record<string, string> = {};
-  const entries = headers instanceof Headers ? headers.entries() : Object.entries(headers);
-  for (const [key, value] of entries) {
-    const lk = key.toLowerCase();
-    // Filter headers managed by the library:
-    // - content-length: auto-calculated from body (may be incorrect if user-provided)
-    // - accept-encoding: auto-set based on decompress option
-    // - cf-*/x-forwarded-*/host/connection/etc: proxy/hop-by-hop headers
-    if (
-      lk.startsWith("cf-") ||
-      lk.startsWith("x-forwarded-") ||
-      lk === "x-real-ip" ||
-      lk === "true-client-ip" ||
-      lk === "cdn-loop" ||
-      lk === "host" ||
-      lk === "connection" ||
-      lk === "transfer-encoding" ||
-      lk === "keep-alive" ||
-      lk === "accept-encoding" ||
-      lk === "content-length"
-    ) {
-      continue;
-    }
-    result[lk] = value;
-  }
-  return result;
-}
+// normalizeHeaders is now imported from ../utils/headers.js
+export { normalizeHeaders } from "../utils/headers.js";
 
 function normalizeBody(
   body: Uint8Array | string | ReadableStream<Uint8Array> | null | undefined,

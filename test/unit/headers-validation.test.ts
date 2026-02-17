@@ -12,21 +12,15 @@ describe("Header Security Validation (CR/LF/NUL)", () => {
     });
 
     it("should reject header name containing CR (\\r)", () => {
-      expect(() => serializeHttp1Headers({ "Bad\rName": "value" })).toThrow(
-        /Invalid header.*CR\/LF\/NUL/,
-      );
+      expect(() => serializeHttp1Headers({ "Bad\rName": "value" })).toThrow(/Invalid header name/);
     });
 
     it("should reject header name containing LF (\\n)", () => {
-      expect(() => serializeHttp1Headers({ "Bad\nName": "value" })).toThrow(
-        /Invalid header.*CR\/LF\/NUL/,
-      );
+      expect(() => serializeHttp1Headers({ "Bad\nName": "value" })).toThrow(/Invalid header name/);
     });
 
     it("should reject header name containing NUL (\\0)", () => {
-      expect(() => serializeHttp1Headers({ "Bad\0Name": "value" })).toThrow(
-        /Invalid header.*CR\/LF\/NUL/,
-      );
+      expect(() => serializeHttp1Headers({ "Bad\0Name": "value" })).toThrow(/Invalid header name/);
     });
 
     it("should reject header value containing CR (\\r)", () => {

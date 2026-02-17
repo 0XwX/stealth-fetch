@@ -7,6 +7,7 @@
  */
 import type { Duplex } from "node:stream";
 import { parseUrl, type ParsedUrl } from "./utils/url.js";
+import { normalizeHeaders, type HeaderInput } from "./utils/headers.js";
 import { createSocket, createWasmTLSSocket } from "./socket/tls.js";
 import { http1Request } from "./http1/client.js";
 import { Http2Client } from "./http2/client.js";
@@ -41,7 +42,7 @@ export interface RetryOptions {
 
 export interface RequestOptions {
   method?: string;
-  headers?: Record<string, string> | Headers;
+  headers?: HeaderInput;
   body?: Uint8Array | string | ReadableStream<Uint8Array> | null;
   /** Protocol selection: 'h2', 'http/1.1', or 'auto' (default) */
   protocol?: "h2" | "http/1.1" | "auto";
@@ -1474,35 +1475,8 @@ async function compressRequestBody(data: Uint8Array): Promise<Uint8Array> {
   return result;
 }
 
-export function normalizeHeaders(
-  headers?: Record<string, string> | Headers,
-): Record<string, string> {
-  if (!headers) return {};
-  const result: Record<string, string> = {};
-  const entries = headers instanceof Headers ? headers.entries() : Object.entries(headers);
-  for (const [key, value] of entries) {
-    const lk = key.toLowerCase();
-    // Strip Cloudflare-injected, proxy, and hop-by-hop headers
-    // so they are never forwarded upstream.
-    if (
-      lk.startsWith("cf-") ||
-      lk.startsWith("x-forwarded-") ||
-      lk === "x-real-ip" ||
-      lk === "true-client-ip" ||
-      lk === "cdn-loop" ||
-      lk === "host" ||
-      lk === "connection" ||
-      lk === "transfer-encoding" ||
-      lk === "keep-alive" ||
-      lk === "accept-encoding" ||
-      lk === "content-length"
-    ) {
-      continue;
-    }
-    result[lk] = value;
-  }
-  return result;
-}
+// normalizeHeaders is now imported from ./utils/headers.js
+export { normalizeHeaders } from "./utils/headers.js";
 
 /**
  * Wrap a ReadableStream so that cleanup runs automatically when the stream
