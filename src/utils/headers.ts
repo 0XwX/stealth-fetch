@@ -99,7 +99,7 @@ export function normalizeHeaders(headers?: HeaderInput): Record<string, string> 
   if (!headers) return {};
   const result: Record<string, string> = {};
   const isArray = Array.isArray(headers);
-  const entries: Iterable<[string, string]> =
+  const entries =
     headers instanceof Headers
       ? headers.entries()
       : isArray
@@ -118,7 +118,7 @@ export function normalizeHeaders(headers?: HeaderInput): Record<string, string> 
         `Invalid header entry: expected [string, string], got ${JSON.stringify(entry)}`,
       );
     }
-    const [key, value] = entry as [string, string];
+    const [key, value] = entry;
     validateHeaderName(key);
     validateHeaderValue(key, value);
 
