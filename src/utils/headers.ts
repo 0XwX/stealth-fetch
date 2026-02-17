@@ -88,36 +88,37 @@ export function serializeHttp1Headers(headers: Record<string, string>): string {
 }
 
 /** Headers input accepted by the public API. */
-export type HeadersInit = Record<string, string> | Headers | [string, string][];
+export type HeaderInput = Record<string, string> | Headers | string[][];
 
 /**
  * Normalize user-supplied headers into a flat lowercase Record.
  * Strips Cloudflare-injected, proxy, and hop-by-hop headers so they
  * are never forwarded upstream.
  */
-export function normalizeHeaders(headers?: HeadersInit): Record<string, string> {
+export function normalizeHeaders(headers?: HeaderInput): Record<string, string> {
   if (!headers) return {};
   const result: Record<string, string> = {};
+  const isArray = Array.isArray(headers);
   const entries: Iterable<[string, string]> =
     headers instanceof Headers
       ? headers.entries()
-      : Array.isArray(headers)
-        ? headers.map(pair => {
-            if (
-              !Array.isArray(pair) ||
-              pair.length !== 2 ||
-              typeof pair[0] !== "string" ||
-              typeof pair[1] !== "string"
-            ) {
-              throw new Error(
-                `Invalid header entry: expected [string, string], got ${JSON.stringify(pair)}`,
-              );
-            }
-            return pair as [string, string];
-          })
+      : isArray
+        ? (headers as string[][])
         : Object.entries(headers);
 
-  for (const [key, value] of entries) {
+  for (const entry of entries) {
+    if (
+      isArray &&
+      (!Array.isArray(entry) ||
+        entry.length !== 2 ||
+        typeof entry[0] !== "string" ||
+        typeof entry[1] !== "string")
+    ) {
+      throw new Error(
+        `Invalid header entry: expected [string, string], got ${JSON.stringify(entry)}`,
+      );
+    }
+    const [key, value] = entry as [string, string];
     validateHeaderName(key);
     validateHeaderValue(key, value);
 
@@ -132,6 +133,7 @@ export function normalizeHeaders(headers?: HeadersInit): Record<string, string> 
       lk === "connection" ||
       lk === "transfer-encoding" ||
       lk === "keep-alive" ||
+      lk === "upgrade" ||
       lk === "accept-encoding" ||
       lk === "content-length"
     ) {

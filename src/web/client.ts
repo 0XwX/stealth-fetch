@@ -3,7 +3,7 @@
  * Simplified from src/client.ts: no H2, no connection pool, no protocol cache.
  */
 import { parseUrl, type ParsedUrl } from "../utils/url.js";
-import { normalizeHeaders, type HeadersInit } from "../utils/headers.js";
+import { normalizeHeaders, type HeaderInput } from "../utils/headers.js";
 import { createRawSocket, type RawSocket } from "./raw-socket.js";
 import { connectWasmTls, preloadWasmTls, type WasmTlsSocket } from "./wasm-tls.js";
 import { http1Request } from "./http1/client.js";
@@ -29,7 +29,7 @@ export interface RetryOptions {
 
 export interface RequestOptions {
   method?: string;
-  headers?: HeadersInit;
+  headers?: HeaderInput;
   body?: Uint8Array | string | ReadableStream<Uint8Array> | null;
   timeout?: number;
   headersTimeout?: number;

@@ -7,7 +7,7 @@
  */
 import type { Duplex } from "node:stream";
 import { parseUrl, type ParsedUrl } from "./utils/url.js";
-import { normalizeHeaders, type HeadersInit } from "./utils/headers.js";
+import { normalizeHeaders, type HeaderInput } from "./utils/headers.js";
 import { createSocket, createWasmTLSSocket } from "./socket/tls.js";
 import { http1Request } from "./http1/client.js";
 import { Http2Client } from "./http2/client.js";
@@ -42,7 +42,7 @@ export interface RetryOptions {
 
 export interface RequestOptions {
   method?: string;
-  headers?: HeadersInit;
+  headers?: HeaderInput;
   body?: Uint8Array | string | ReadableStream<Uint8Array> | null;
   /** Protocol selection: 'h2', 'http/1.1', or 'auto' (default) */
   protocol?: "h2" | "http/1.1" | "auto";
