@@ -4,6 +4,7 @@ export default defineWorkersConfig({
   test: {
     testTimeout: 60000,
     hookTimeout: 30000,
+    exclude: ["node_modules/**", "dist/**", "tmp/**"],
     poolOptions: {
       workers: {
         wrangler: { configPath: "./wrangler.toml" },
