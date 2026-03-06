@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { toWebResponse } from "../../../src/compat/web.js";
-import type { HttpResponse } from "../../../src/client.js";
+import type { HttpResponse } from "../../../src/web/client.js";
 
 // Helper to create a mock HttpResponse
 function mockHttpResponse(overrides: Partial<HttpResponse> = {}): HttpResponse {
