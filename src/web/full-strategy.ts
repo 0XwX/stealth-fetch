@@ -177,7 +177,7 @@ export function createFullStrategy(wasmTransport: WasmTransport): InnerRequestFn
       try {
         return await h1RequestDirect(parsed, options, body, true, signal);
       } catch (err) {
-        if (!isCloudflareNetworkError(err) || isStreamBody) throw err;
+        if (!isCloudflareNetworkError(err) || isStreamBody || !idempotent) throw err;
       }
 
       // Direct blocked → NAT64 fallback

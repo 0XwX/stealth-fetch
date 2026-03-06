@@ -129,6 +129,7 @@ export function createRequestFn(
         currentHeaders["content-encoding"] = "gzip";
         currentHeaders["content-length"] = String(compressed.byteLength);
         body = compressed;
+        currentBody = compressed;
       }
 
       const reqOptions: NormalizedOptions = {
@@ -159,7 +160,11 @@ export function createRequestFn(
       if (visitedUrls.has(resolvedUrl)) throw new Error(`Redirect loop detected: ${resolvedUrl}`);
       visitedUrls.add(resolvedUrl);
 
-      if (response.status === 301 || response.status === 302 || response.status === 303) {
+      const shouldRewriteToGet =
+        (response.status === 303 && currentMethod !== "HEAD") ||
+        ((response.status === 301 || response.status === 302) && currentMethod === "POST");
+
+      if (shouldRewriteToGet) {
         currentMethod = "GET";
         currentBody = null;
         delete currentHeaders["content-type"];
