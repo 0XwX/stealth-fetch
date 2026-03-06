@@ -101,7 +101,7 @@ export function createRequestFn(
     const redirect = options.redirect ?? "follow";
     const maxRedirects = options.maxRedirects ?? 5;
     let currentUrl = url;
-    let currentMethod = options.method ?? "GET";
+    let currentMethod = (options.method ?? "GET").toUpperCase();
     const currentHeaders = normalizeHeaders(options.headers);
     let currentBody = options.body;
     let redirectCount = 0;
