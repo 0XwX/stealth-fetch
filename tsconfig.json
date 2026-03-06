@@ -14,7 +14,11 @@
     "outDir": "./dist",
     "rootDir": ".",
     "types": ["@cloudflare/workers-types", "@types/node"],
-    "lib": ["ES2022"]
+    "lib": ["ES2022"],
+    "paths": {
+      "stealth-fetch/lite": ["./src/lite/index.ts"],
+      "stealth-fetch/web": ["./src/web/index.ts"]
+    }
   },
   "include": ["src/**/*", "test/**/*", "examples/**/*"],
   "exclude": ["node_modules", "dist", "coverage"]

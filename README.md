@@ -4,7 +4,8 @@
 [![npm](https://img.shields.io/npm/v/stealth-fetch.svg)](https://www.npmjs.com/package/stealth-fetch)
 
 HTTP client for Cloudflare Workers that bypasses automatic `cf-*` header
-injection. Built on `cloudflare:sockets` with WASM TLS (rustls).
+injection. Built on `cloudflare:sockets` with platform TLS and WASM TLS
+fallbacks, depending on the entry point.
 
 ## Why stealth-fetch
 
@@ -28,8 +29,8 @@ Workers HTTP pipeline and its header injection.
 - **Redirects, retries, timeouts** --- configurable with sensible defaults
 - **Raw headers preserved** --- original order and multi-value headers
   maintained
-- **Two entry points** --- `stealth-fetch` (nodejs_compat) and
-  `stealth-fetch/web` (pure Web API)
+- **Three entry points** --- `stealth-fetch` (full), `stealth-fetch/web`
+  (Worker + NAT64/WASM fallback), and `stealth-fetch/lite` (Worker direct TLS)
 
 ## Quick Start
 
@@ -55,7 +56,7 @@ const response = await request("https://api.example.com/v1/chat/completions", {
 const data = await response.json();
 ```
 
-### Web Entry Point (no `nodejs_compat`)
+### Worker Entry Point (NAT64/WASM fallback, no `nodejs_compat`)
 
 ```typescript
 import { request } from "stealth-fetch/web";
@@ -68,6 +69,20 @@ const data = await response.json();
 
 The `/web` entry uses only Web platform APIs (`cloudflare:sockets`,
 `WebAssembly`, `ReadableStream`) and supports HTTP/1.1 only.
+
+### Lite Entry Point (platform TLS direct, no `nodejs_compat`)
+
+```typescript
+import { request } from "stealth-fetch/lite";
+
+const response = await request("https://httpbin.org/headers", {
+  headers: { "User-Agent": "my-worker/1.0" },
+});
+const data = await response.json();
+```
+
+The `/lite` entry uses only Web platform APIs and supports HTTP/1.1 only. It
+does not include DoH detection, NAT64 fallback, or WASM TLS.
 
 ## API Reference
 
@@ -151,6 +166,7 @@ import {
 - Cloudflare Workers runtime
 - **`stealth-fetch`**: requires `nodejs_compat` compatibility flag
 - **`stealth-fetch/web`**: no compatibility flags needed
+- **`stealth-fetch/lite`**: no compatibility flags needed
 
 ## License
 

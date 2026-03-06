@@ -32,3 +32,8 @@ declare module "hpack.js" {
     create(options?: HpackOptions): Decompressor;
   };
 }
+
+declare module "*?raw" {
+  const content: string;
+  export default content;
+}

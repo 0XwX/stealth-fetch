@@ -1,4 +1,10 @@
-import type { HttpResponse } from "../client.js";
+interface ConvertibleResponse {
+  status: number;
+  statusText: string;
+  headers: Record<string, string>;
+  rawHeaders?: ReadonlyArray<[string, string]>;
+  body: ReadableStream<Uint8Array>;
+}
 
 export interface WebResponsePair {
   response: Response;
@@ -10,7 +16,7 @@ export interface WebResponsePair {
  * Note: Do not call HttpResponse.text/json/arrayBuffer before converting.
  */
 export function toWebResponse(
-  response: HttpResponse,
+  response: ConvertibleResponse,
   options?: { tee?: boolean },
 ): Response | WebResponsePair {
   if (response.body.locked) {

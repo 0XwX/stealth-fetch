@@ -1,6 +1,6 @@
 {
   "name": "stealth-fetch",
-  "version": "0.1.6",
+  "version": "0.2.0",
   "description": "HTTP/1.1 + HTTP/2 client for Cloudflare Workers via cloudflare:sockets, bypassing cf-* header injection",
   "type": "module",
   "main": "dist/index.js",
@@ -19,12 +19,22 @@
         "types": "./dist/web/index.d.ts",
         "default": "./dist/web/index.js"
       }
+    },
+    "./lite": {
+      "workerd": "./dist/lite/index.js",
+      "import": {
+        "types": "./dist/lite/index.d.ts",
+        "default": "./dist/lite/index.js"
+      }
     }
   },
   "typesVersions": {
     "*": {
       "web": [
         "dist/web/index.d.ts"
+      ],
+      "lite": [
+        "dist/lite/index.d.ts"
       ]
     }
   },
@@ -34,6 +44,7 @@
     "build": "tsup && bash scripts/copy-wasm.sh",
     "test": "vitest",
     "test:run": "vitest run",
+    "test:dist": "vitest run --config test/dist/vitest.config.ts",
     "test:coverage": "vitest run --coverage",
     "lint": "eslint src/ test/ examples/",
     "lint:fix": "eslint src/ test/ examples/ --fix",
@@ -41,7 +52,7 @@
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\" \"examples/**/*.ts\" \"*.json\" \"*.ts\" \"*.js\" \"*.md\"",
     "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\" \"examples/**/*.ts\" \"*.json\" \"*.ts\" \"*.js\" \"*.md\"",
     "type-check": "tsc --noEmit",
-    "prepublishOnly": "npm run build:wasm && npm run type-check && npm run test:run && npm run build",
+    "prepublishOnly": "npm run build:wasm && npm run type-check && npm run test:run && npm run build && npm run test:dist",
     "prepare": "husky"
   },
   "dependencies": {

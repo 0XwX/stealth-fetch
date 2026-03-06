@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
-import { tryWithNat64, type Nat64Candidate, type HttpResponse } from "../../../src/web/client.js";
+import { tryWithNat64, type Nat64Candidate } from "../../../src/web/full-strategy.js";
+import type { HttpResponse } from "../../../src/web/client.js";
 import { parseUrl } from "../../../src/utils/url.js";
 
 function createMockResponse(tag: string): HttpResponse {
