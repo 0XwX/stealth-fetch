@@ -159,8 +159,8 @@ export function createFullStrategy(wasmTransport: WasmTransport): InnerRequestFn
       if (cfCheck.isCf && cfCheck.ipv4) {
         try {
           wasmTransport.preload();
-        } catch {
-          /* best-effort */
+        } catch (err) {
+          console.debug("[web:request] WASM preload failed (best-effort)", err);
         }
         const candidates = getNat64Candidates(cfCheck.ipv4);
         return await tryWithNat64(
@@ -184,8 +184,8 @@ export function createFullStrategy(wasmTransport: WasmTransport): InnerRequestFn
       throwIfAborted(signal);
       try {
         wasmTransport.preload();
-      } catch {
-        /* best-effort */
+      } catch (err) {
+        console.debug("[web:request] WASM preload failed on fallback (best-effort)", err);
       }
       const ipv4 = await resolveNat64IPv4(parsed.hostname, cfCheck.ipv4);
       if (!ipv4) {
@@ -372,9 +372,15 @@ export async function tryWithNat64(
         loser.cancel();
         loser.promise
           .then(r => {
-            if (r.ok) r.response.body.cancel().catch(() => {});
+            if (r.ok) {
+              r.response.body.cancel().catch((err: unknown) => {
+                console.debug("[web:request] hedged loser body cancel failed", err);
+              });
+            }
           })
-          .catch(() => {});
+          .catch((err: unknown) => {
+            console.debug("[web:request] hedged loser cleanup failed", err);
+          });
         return firstWinner.result.response;
       }
       if (signal.aborted) throw firstWinner.result.error;

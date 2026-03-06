@@ -161,7 +161,8 @@ function createAutoCleanupStream(
     if (cleaned) return;
     cleaned = true;
     const result = onCleanup();
-    if (result instanceof Promise) result.catch(() => {});
+    if (result instanceof Promise)
+      result.catch((err: unknown) => console.debug("[request-utils] auto-cleanup failed", err));
   };
 
   return new ReadableStream<Uint8Array>({
