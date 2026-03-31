@@ -1650,8 +1650,13 @@ function wrapResponse(
     },
     async close(): Promise<void> {
       if (!bodyConsumed) {
+        try {
+          await wrappedBody.cancel();
+        } catch {
+          // Stream may be locked by a reader — force cleanup directly
+          cleanup();
+        }
         bodyConsumed = true;
-        await wrappedBody.cancel();
       }
     },
   };

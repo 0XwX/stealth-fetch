@@ -279,17 +279,25 @@ function readResponse(
           return;
         }
 
-        const result = parseResponseHead(headBuffer);
+        // Parse response head, looping to skip 1xx informational responses.
+        // A single TCP packet may contain "100 Continue\r\n\r\nHTTP/1.1 200 OK..."
+        // so we must keep parsing within the same data event.
+        let result = parseResponseHead(headBuffer);
         if (!result) return; // need more data for headers
 
         // Skip 1xx informational responses (RFC 7231 Section 6.2)
         // 100 Continue, 102 Processing, 103 Early Hints — skip and wait for final response.
         // 101 Switching Protocols is NOT skipped (Upgrade semantics, not supported — treat as final).
-        const s = result.response.status;
-        if (s >= 100 && s < 200 && s !== 101) {
+        while (
+          result &&
+          result.response.status >= 100 &&
+          result.response.status < 200 &&
+          result.response.status !== 101
+        ) {
           headBuffer = headBuffer.subarray(result.bodyStart);
-          return;
+          result = parseResponseHead(headBuffer);
         }
+        if (!result) return; // need more data for final response headers
 
         headParsed = true;
         parsed = result.response;

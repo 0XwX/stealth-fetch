@@ -507,10 +507,23 @@ export class Http2Connection extends EventEmitter {
         }
         this.handleGoawayFrame(frame);
         break;
+      case FrameType.PRIORITY:
+        // RFC 7540 Section 6.3: PRIORITY MUST be associated with a stream
+        if (frame.streamId === 0) {
+          this.sendGoawayAndClose(ErrorCode.PROTOCOL_ERROR);
+          return;
+        }
+        // We don't implement priority scheduling — safely ignore
+        break;
       case FrameType.PUSH_PROMISE:
         // We disabled PUSH, send PROTOCOL_ERROR if received
         this.writeRaw(encodeGoaway(0, ErrorCode.PROTOCOL_ERROR)).catch(() => {});
         break;
+      case FrameType.CONTINUATION:
+        // CONTINUATION outside of an active header block is a protocol error
+        // (we already handle the valid case at the top of handleFrame)
+        this.sendGoawayAndClose(ErrorCode.PROTOCOL_ERROR);
+        return;
       default:
         // Unknown frame types are ignored (RFC 7540 Section 4.1)
         break;
