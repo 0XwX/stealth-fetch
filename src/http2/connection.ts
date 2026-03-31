@@ -83,6 +83,7 @@ export class Http2Connection extends EventEmitter {
   private settingsAckResolve: (() => void) | null = null;
   private remoteSettingsResolve: (() => void) | null = null;
   private readyPromise: Promise<void> | null = null;
+  private readyReject: ((err: Error) => void) | null = null;
   private settingsTimeout: number;
 
   // Continuation state
@@ -163,7 +164,16 @@ export class Http2Connection extends EventEmitter {
     const settingsAckPromise = new Promise<void>(resolve => {
       this.settingsAckResolve = resolve;
     });
-    this.readyPromise = Promise.all([remoteSettingsPromise, settingsAckPromise]).then(() => {});
+    this.readyPromise = new Promise<void>((resolve, reject) => {
+      this.readyReject = (err: Error) => {
+        this.readyReject = null;
+        reject(err);
+      };
+      Promise.all([remoteSettingsPromise, settingsAckPromise]).then(() => {
+        this.readyReject = null;
+        resolve();
+      });
+    });
   }
 
   /**
@@ -176,12 +186,17 @@ export class Http2Connection extends EventEmitter {
       throw new Error("startInitialize() must be called first");
     }
 
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error("HTTP/2 SETTINGS exchange timeout")), timeout);
+      timer = setTimeout(() => reject(new Error("HTTP/2 SETTINGS exchange timeout")), timeout);
     });
 
-    await Promise.race([this.readyPromise, timeoutPromise]);
-    this.initialized = true;
+    try {
+      await Promise.race([this.readyPromise, timeoutPromise]);
+      this.initialized = true;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /**
@@ -445,25 +460,52 @@ export class Http2Connection extends EventEmitter {
 
     switch (frame.type) {
       case FrameType.DATA:
+        // RFC 7540 Section 6.1: DATA frames MUST be associated with a stream
+        if (frame.streamId === 0) {
+          this.sendGoawayAndClose(ErrorCode.PROTOCOL_ERROR);
+          return;
+        }
         this.handleDataFrame(frame);
         break;
       case FrameType.HEADERS:
+        // RFC 7540 Section 6.2: HEADERS frames MUST be associated with a stream
+        if (frame.streamId === 0) {
+          this.sendGoawayAndClose(ErrorCode.PROTOCOL_ERROR);
+          return;
+        }
         this.handleHeadersFrame(frame);
         break;
+      case FrameType.RST_STREAM:
+        // RFC 7540 Section 6.4: RST_STREAM MUST be associated with a stream
+        if (frame.streamId === 0) {
+          this.sendGoawayAndClose(ErrorCode.PROTOCOL_ERROR);
+          return;
+        }
+        this.handleRstStreamFrame(frame);
+        break;
       case FrameType.SETTINGS:
+        // Stream-id validated inside handleSettingsFrame
         this.handleSettingsFrame(frame);
         break;
       case FrameType.WINDOW_UPDATE:
+        // Valid on both stream 0 and non-0
         this.handleWindowUpdateFrame(frame);
         break;
       case FrameType.PING:
+        // RFC 7540 Section 6.7: PING frames MUST be on stream 0
+        if (frame.streamId !== 0) {
+          this.sendGoawayAndClose(ErrorCode.PROTOCOL_ERROR);
+          return;
+        }
         this.handlePingFrame(frame);
         break;
       case FrameType.GOAWAY:
+        // RFC 7540 Section 6.8: GOAWAY frames MUST be on stream 0
+        if (frame.streamId !== 0) {
+          this.sendGoawayAndClose(ErrorCode.PROTOCOL_ERROR);
+          return;
+        }
         this.handleGoawayFrame(frame);
-        break;
-      case FrameType.RST_STREAM:
-        this.handleRstStreamFrame(frame);
         break;
       case FrameType.PUSH_PROMISE:
         // We disabled PUSH, send PROTOCOL_ERROR if received
@@ -760,6 +802,9 @@ export class Http2Connection extends EventEmitter {
   }
 
   private handleError(err: Error): void {
+    if (this.readyReject) {
+      this.readyReject(err);
+    }
     // Parser/protocol errors should terminate the connection with GOAWAY
     const errorCode = err.message?.includes("Frame size")
       ? ErrorCode.FRAME_SIZE_ERROR
@@ -771,6 +816,9 @@ export class Http2Connection extends EventEmitter {
   private handleSocketClose(): void {
     if (!this.closed) {
       this.closed = true;
+      if (this.readyReject) {
+        this.readyReject(new Error("Socket closed during HTTP/2 handshake"));
+      }
       for (const stream of this.streams.values()) {
         stream.handleRstStream(ErrorCode.CANCEL);
       }

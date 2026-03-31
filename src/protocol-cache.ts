@@ -42,8 +42,8 @@ export function setCachedProtocol(
   port: number,
   protocol: "h2" | "http/1.1",
 ): void {
-  // Evict oldest entries if at capacity
-  if (cache.size >= MAX_ENTRIES) {
+  // Evict oldest entries if adding a NEW entry at capacity
+  if (cache.size >= MAX_ENTRIES && !cache.has(makeKey(hostname, port))) {
     const firstKey = cache.keys().next().value;
     if (firstKey) cache.delete(firstKey);
   }

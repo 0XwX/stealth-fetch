@@ -6,7 +6,7 @@
  * by Cloudflare Workers' outbound socket restrictions.
  */
 import type { Duplex } from "node:stream";
-import { parseUrl, type ParsedUrl } from "./utils/url.js";
+import { parseUrl, hostWithPort, type ParsedUrl } from "./utils/url.js";
 import { normalizeHeaders, type HeaderInput } from "./utils/headers.js";
 import { createSocket, createWasmTLSSocket } from "./socket/tls.js";
 import { http1Request } from "./http1/client.js";
@@ -98,6 +98,8 @@ export interface HttpResponse {
   arrayBuffer(): Promise<ArrayBuffer>;
   /** Get all Set-Cookie header values as separate strings */
   getSetCookie(): string[];
+  /** Explicitly release underlying connection resources without consuming body */
+  close(): Promise<void>;
 }
 
 /**
@@ -357,6 +359,7 @@ async function doRequest(
     let body = normalizeBody(currentBody);
 
     // Compress request body with gzip if requested (Uint8Array > 1KB, no existing content-encoding)
+    let autoCompressed = false;
     if (
       options.compressBody &&
       body instanceof Uint8Array &&
@@ -367,6 +370,7 @@ async function doRequest(
       currentHeaders["content-encoding"] = "gzip";
       currentHeaders["content-length"] = String(compressed.byteLength);
       body = compressed;
+      autoCompressed = true;
     }
 
     const reqOptions: NormalizedOptions = {
@@ -442,8 +446,15 @@ async function doRequest(
       delete currentHeaders["proxy-authorization"];
     }
 
-    // Update host header
-    currentHeaders["host"] = newParsed.hostname;
+    // Clear auto-compression state so it can be re-applied next iteration
+    // (only when we auto-compressed; user-set content-encoding is preserved)
+    if (autoCompressed) {
+      delete currentHeaders["content-encoding"];
+      delete currentHeaders["content-length"];
+    }
+
+    // Update host header (include port if non-default)
+    currentHeaders["host"] = hostWithPort(newParsed.hostname, newParsed.port, newParsed.protocol);
     currentUrl = resolvedUrl;
   }
 }
@@ -1049,6 +1060,8 @@ async function autoRequestWithSocket(
       method: options.method ?? "GET",
       path: parsed.path,
       hostname: parsed.hostname,
+      port: parsed.port,
+      protocol: parsed.protocol,
       headers: options.headers ?? {},
       body,
       signal,
@@ -1199,8 +1212,18 @@ async function h2RequestWithConnect(
   } catch (err) {
     signal.removeEventListener("abort", onAbort);
     if (fromPool) {
-      // Pooled connection failed — remove from pool and retry with fresh connection
+      // Pooled connection failed — remove from pool
       removePooled(parsed.hostname, parsed.port, connectHostname);
+
+      // Only retry with fresh connection for idempotent methods with non-stream bodies.
+      // Non-idempotent (POST, PATCH) may have partially sent — retrying risks duplication.
+      // ReadableStream bodies are not replayable.
+      const method = (options.method ?? "GET").toUpperCase();
+      if (!IDEMPOTENT_METHODS.has(method) || body instanceof ReadableStream) {
+        await client.close().catch(() => {});
+        throw err;
+      }
+
       throwIfAborted(signal);
       const freshClient = await abortableConnect(
         () =>
@@ -1311,7 +1334,11 @@ async function http11Request(
     isStreamBody,
     idempotent,
     "http11Request",
-    (candidate, s) => http11RequestWithWasmTLS(parsed, options, body, s, candidate.connectHostname),
+    tls
+      ? (candidate, s) =>
+          http11RequestWithWasmTLS(parsed, options, body, s, candidate.connectHostname)
+      : (candidate, s) =>
+          http11RequestWithConnect(parsed, options, body, false, s, candidate.connectHostname),
     () => `Connection blocked and all NAT64 prefixes failed for ${parsed.hostname}:${parsed.port}`,
   );
 }
@@ -1338,6 +1365,8 @@ async function http11RequestWithWasmTLS(
       method: options.method ?? "GET",
       path: parsed.path,
       hostname: parsed.hostname,
+      port: parsed.port,
+      protocol: parsed.protocol,
       headers: options.headers ?? {},
       body,
       signal,
@@ -1371,10 +1400,11 @@ async function http11RequestWithConnect(
   body: Uint8Array | ReadableStream<Uint8Array> | null,
   tls: boolean,
   signal: AbortSignal,
+  connectHostname?: string,
 ): Promise<HttpResponse> {
   throwIfAborted(signal);
   const socket = await abortableConnect(
-    () => createSocket(parsed.hostname, parsed.port, tls, signal),
+    () => createSocket(connectHostname ?? parsed.hostname, parsed.port, tls, signal),
     signal,
   );
 
@@ -1386,6 +1416,8 @@ async function http11RequestWithConnect(
       method: options.method ?? "GET",
       path: parsed.path,
       hostname: parsed.hostname,
+      port: parsed.port,
+      protocol: parsed.protocol,
       headers: options.headers ?? {},
       body,
       signal,
@@ -1615,6 +1647,12 @@ function wrapResponse(
     },
     getSetCookie(): string[] {
       return rawHeaders.filter(([name]) => name === "set-cookie").map(([, value]) => value);
+    },
+    async close(): Promise<void> {
+      if (!bodyConsumed) {
+        bodyConsumed = true;
+        await wrappedBody.cancel();
+      }
     },
   };
 }

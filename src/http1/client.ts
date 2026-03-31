@@ -6,6 +6,7 @@
 import { Buffer } from "node:buffer";
 import type { Duplex } from "node:stream";
 import { serializeHttp1Headers, validateMethod, validatePath } from "../utils/headers.js";
+import { hostWithPort } from "../utils/url.js";
 import { parseResponseHead, type ParsedResponse } from "./parser.js";
 import { ChunkedDecoder } from "./chunked.js";
 
@@ -13,6 +14,8 @@ export interface Http1Request {
   method: string;
   path: string;
   hostname: string;
+  port?: number;
+  protocol?: "https" | "http";
   headers: Record<string, string>;
   body?: Uint8Array | ReadableStream<Uint8Array> | null;
   signal?: AbortSignal;
@@ -47,7 +50,9 @@ export async function http1Request(socket: Duplex, request: Http1Request): Promi
   // Build request
   const reqHeaders = { ...request.headers };
   if (!reqHeaders["host"]) {
-    reqHeaders["host"] = request.hostname;
+    const proto = request.protocol ?? "https";
+    const port = request.port ?? (proto === "https" ? 443 : 80);
+    reqHeaders["host"] = hostWithPort(request.hostname, port, proto);
   }
   if (!reqHeaders["connection"]) {
     reqHeaders["connection"] = "close";
@@ -277,8 +282,11 @@ function readResponse(
         const result = parseResponseHead(headBuffer);
         if (!result) return; // need more data for headers
 
-        // Skip 100 Continue intermediate responses
-        if (result.response.status === 100) {
+        // Skip 1xx informational responses (RFC 7231 Section 6.2)
+        // 100 Continue, 102 Processing, 103 Early Hints — skip and wait for final response.
+        // 101 Switching Protocols is NOT skipped (Upgrade semantics, not supported — treat as final).
+        const s = result.response.status;
+        if (s >= 100 && s < 200 && s !== 101) {
           headBuffer = headBuffer.subarray(result.bodyStart);
           return;
         }
@@ -359,6 +367,33 @@ function readResponse(
     const onEnd = () => {
       if (!headParsed) {
         reject(new Error("Connection closed before response headers received"));
+      } else if (parsed) {
+        // Validate body completeness before closing
+        if (parsed.bodyMode === "content-length" && bodyBytesReceived < parsed.contentLength) {
+          const err = new Error(
+            `Response body truncated: received ${bodyBytesReceived} of ${parsed.contentLength} bytes`,
+          );
+          if (bodyController && !bodyStreamClosed) {
+            bodyStreamClosed = true;
+            try {
+              bodyController.error(err);
+            } catch {
+              /* ignore */
+            }
+          }
+        } else if (parsed.bodyMode === "chunked" && chunkedDecoder && !chunkedDecoder.done) {
+          const err = new Error("Response body truncated: chunked encoding not terminated");
+          if (bodyController && !bodyStreamClosed) {
+            bodyStreamClosed = true;
+            try {
+              bodyController.error(err);
+            } catch {
+              /* ignore */
+            }
+          }
+        } else {
+          closeBody();
+        }
       } else {
         closeBody();
       }

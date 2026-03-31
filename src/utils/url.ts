@@ -16,6 +16,12 @@ export interface ParsedUrl {
 export function parseUrl(url: string): ParsedUrl {
   const parsed = new URL(url);
 
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    throw new Error(
+      `Unsupported protocol: ${parsed.protocol} (only http: and https: are supported)`,
+    );
+  }
+
   const protocol = parsed.protocol === "https:" ? "https" : "http";
   const hostname = parsed.hostname;
   const defaultPort = protocol === "https" ? 443 : 80;
@@ -23,4 +29,10 @@ export function parseUrl(url: string): ParsedUrl {
   const path = parsed.pathname + parsed.search;
 
   return { protocol, hostname, port, path: path || "/" };
+}
+
+/** Return hostname:port only if port is non-default for the protocol */
+export function hostWithPort(hostname: string, port: number, protocol: "https" | "http"): string {
+  const defaultPort = protocol === "https" ? 443 : 80;
+  return port === defaultPort ? hostname : `${hostname}:${port}`;
 }

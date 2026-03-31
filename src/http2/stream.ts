@@ -96,7 +96,7 @@ export class Http2Stream extends EventEmitter {
     // Extract status and build headers object
     const headerObj: Record<string, string> = {};
     const rawHeaders: Array<[string, string]> = [];
-    let status = 200;
+    let status: number | null = null;
     for (const [name, value] of headers) {
       if (name === ":status") {
         const s = parseInt(value, 10);
@@ -116,6 +116,18 @@ export class Http2Stream extends EventEmitter {
         rawHeaders.push([name, value]);
         headerObj[name] = headerObj[name] ? `${headerObj[name]}, ${value}` : value;
       }
+    }
+
+    // :status is mandatory (RFC 7540 Section 8.1.2.4)
+    if (status === null) {
+      const err = new Error("HTTP/2 response missing mandatory :status pseudo-header");
+      if (this.responsePromiseReject) {
+        this.responsePromiseReject(err);
+        this.responsePromiseResolve = null;
+        this.responsePromiseReject = null;
+      }
+      this.closeBodyWithError(err);
+      return;
     }
 
     if (this.responsePromiseResolve) {
@@ -242,7 +254,7 @@ export class Http2Stream extends EventEmitter {
       // Already received
       const headerObj: Record<string, string> = {};
       const rawHeaders: Array<[string, string]> = [];
-      let status = 200;
+      let status: number | null = null;
       for (const [name, value] of this.responseHeaders) {
         if (name === ":status") {
           const s = parseInt(value, 10);
@@ -253,6 +265,9 @@ export class Http2Stream extends EventEmitter {
           rawHeaders.push([name, value]);
           headerObj[name] = headerObj[name] ? `${headerObj[name]}, ${value}` : value;
         }
+      }
+      if (status === null) {
+        return Promise.reject(new Error("HTTP/2 response missing mandatory :status pseudo-header"));
       }
       return Promise.resolve({ status, headers: headerObj, rawHeaders });
     }

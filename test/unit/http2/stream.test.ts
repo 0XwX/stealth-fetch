@@ -152,15 +152,14 @@ describe("Http2Stream", () => {
       expect(resp.headers["set-cookie"]).toBe("a=1, b=2");
     });
 
-    it("should default to status 200 if :status missing", async () => {
+    it("should reject if :status missing", async () => {
       const s = new Http2Stream(1, DEFAULT_INITIAL_WINDOW_SIZE);
       s.open();
       const promise = s.waitForResponse();
 
       s.handleHeaders([["content-type", "text/plain"]], false);
 
-      const resp = await promise;
-      expect(resp.status).toBe(200);
+      await expect(promise).rejects.toThrow("missing mandatory :status");
     });
   });
 

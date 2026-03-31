@@ -3,6 +3,8 @@
  * HTTP/2 requires lowercase header names (RFC 7540 Section 8.1.2).
  */
 
+import { hostWithPort } from "./url.js";
+
 /**
  * Build HTTP/2 pseudo-headers from request parameters.
  * Pseudo-headers must come before regular headers (RFC 7540 Section 8.1.2.1).
@@ -12,12 +14,14 @@ export function buildPseudoHeaders(
   hostname: string,
   path: string,
   scheme: "https" | "http",
+  port?: number,
 ): Array<[string, string]> {
+  const authority = port !== undefined ? hostWithPort(hostname, port, scheme) : hostname;
   return [
     [":method", method.toUpperCase()],
     [":path", path],
     [":scheme", scheme],
-    [":authority", hostname],
+    [":authority", authority],
   ];
 }
 

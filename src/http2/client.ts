@@ -88,7 +88,13 @@ export class Http2Client {
     validatePath(parsed.path);
 
     // Build HTTP/2 headers (pseudo + regular)
-    const pseudo = buildPseudoHeaders(method, parsed.hostname, parsed.path, parsed.protocol);
+    const pseudo = buildPseudoHeaders(
+      method,
+      parsed.hostname,
+      parsed.path,
+      parsed.protocol,
+      parsed.port,
+    );
     const allHeaders = mergeHeaders(pseudo, options.headers ?? {});
 
     // Add content-length for non-stream body
