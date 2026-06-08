@@ -1,0 +1,4 @@
+# Supply chain security
+minimumReleaseAge: 10080
+blockExoticSubdeps: true
+trustPolicy: no-downgrade

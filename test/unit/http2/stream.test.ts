@@ -265,6 +265,24 @@ describe("Http2Stream", () => {
       expect(text).toBe("hello world");
     });
 
+    it("should reset the stream when queued response body exceeds the limit", async () => {
+      const s = new Http2Stream(1, DEFAULT_INITIAL_WINDOW_SIZE);
+      const rst = vi.fn();
+      s.setOnSendRst(rst);
+      s.open();
+      s.waitForResponse();
+      s.handleHeaders([[":status", "200"]], false);
+
+      for (let i = 0; i < 10; i++) {
+        s.handleData(Buffer.alloc(1024 * 1024), false);
+      }
+
+      expect(rst).toHaveBeenCalledWith(1, ErrorCode.ENHANCE_YOUR_CALM);
+      expect(s.state).toBe("closed");
+      const reader = s.body.getReader();
+      await expect(reader.read()).rejects.toThrow("response body queue exceeded");
+    });
+
     it("should close body stream on END_STREAM with headers", async () => {
       const s = new Http2Stream(1, DEFAULT_INITIAL_WINDOW_SIZE);
       s.open();

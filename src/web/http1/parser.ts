@@ -68,20 +68,25 @@ export function parseResponseHead(data: Uint8Array): {
     }
   }
 
+  const contentLength = parseContentLength(rawHeaders);
+  const hasTransferEncoding = headers["transfer-encoding"] !== undefined;
+  if (contentLength !== null && !hasTransferEncoding) {
+    headers["content-length"] = String(contentLength);
+  } else if (hasTransferEncoding) {
+    delete headers["content-length"];
+  }
+
   // Determine body mode
   let bodyMode: ParsedResponse["bodyMode"] = "close";
-  let contentLength = 0;
+  let bodyContentLength = 0;
 
-  if (headers["transfer-encoding"]) {
+  if (hasTransferEncoding) {
     if (headers["transfer-encoding"].includes("chunked")) {
       bodyMode = "chunked";
     }
-  } else if (headers["content-length"]) {
-    const cl = parseInt(headers["content-length"], 10);
-    if (!isNaN(cl) && cl >= 0) {
-      bodyMode = "content-length";
-      contentLength = cl;
-    }
+  } else if (contentLength !== null) {
+    bodyMode = "content-length";
+    bodyContentLength = contentLength;
   }
 
   return {
@@ -92,8 +97,32 @@ export function parseResponseHead(data: Uint8Array): {
       headers,
       rawHeaders,
       bodyMode,
-      contentLength,
+      contentLength: bodyContentLength,
     },
     bodyStart,
   };
+}
+
+function parseContentLength(rawHeaders: Array<[string, string]>): number | null {
+  const values = rawHeaders
+    .filter(([name]) => name === "content-length")
+    .flatMap(([, value]) => value.split(",").map(v => v.trim()));
+  if (values.length === 0) return null;
+
+  let expected: number | null = null;
+  for (const value of values) {
+    if (!/^[0-9]+$/.test(value)) {
+      throw new Error(`Invalid Content-Length: "${value}"`);
+    }
+    const parsed = Number(value);
+    if (!Number.isSafeInteger(parsed)) {
+      throw new Error(`Content-Length too large: "${value}"`);
+    }
+    if (expected === null) {
+      expected = parsed;
+    } else if (expected !== parsed) {
+      throw new Error(`Conflicting Content-Length values: ${values.join(", ")}`);
+    }
+  }
+  return expected;
 }

@@ -332,7 +332,7 @@ async function doRequest(
   const strategy = options.strategy ?? "compat";
 
   let currentUrl = url;
-  let currentMethod = options.method ?? "GET";
+  let currentMethod = (options.method ?? "GET").toUpperCase();
   const currentHeaders = normalizeHeaders(options.headers);
   let currentBody = options.body;
   let redirectCount = 0;
@@ -425,8 +425,11 @@ async function doRequest(
     }
     visitedUrls.add(resolvedUrl);
 
-    // 301/302/303 → change to GET, drop body
-    if (response.status === 301 || response.status === 302 || response.status === 303) {
+    const shouldRewriteToGet =
+      (response.status === 303 && currentMethod !== "HEAD") ||
+      ((response.status === 301 || response.status === 302) && currentMethod === "POST");
+
+    if (shouldRewriteToGet) {
       currentMethod = "GET";
       currentBody = null;
       delete currentHeaders["content-type"];
@@ -441,9 +444,7 @@ async function doRequest(
 
     // Cross-origin → remove sensitive headers
     if (isOriginChange(parsed, newParsed)) {
-      delete currentHeaders["authorization"];
-      delete currentHeaders["cookie"];
-      delete currentHeaders["proxy-authorization"];
+      stripSensitiveRedirectHeaders(currentHeaders);
     }
 
     // Clear auto-compression state so it can be re-applied next iteration
@@ -1457,12 +1458,23 @@ function isOriginChange(from: ParsedUrl, to: ParsedUrl): boolean {
 }
 
 async function consumeAndDiscard(response: HttpResponse): Promise<void> {
-  const reader = response.body.getReader();
-  while (true) {
-    const { done } = await reader.read();
-    if (done) break;
+  await response.close();
+}
+
+function stripSensitiveRedirectHeaders(headers: Record<string, string>): void {
+  for (const name of SENSITIVE_REDIRECT_HEADERS) {
+    delete headers[name];
   }
 }
+
+const SENSITIVE_REDIRECT_HEADERS = [
+  "authorization",
+  "cookie",
+  "proxy-authorization",
+  "x-api-key",
+  "api-key",
+  "x-auth-token",
+];
 
 function throwIfAborted(signal: AbortSignal): void {
   if (signal.aborted) {

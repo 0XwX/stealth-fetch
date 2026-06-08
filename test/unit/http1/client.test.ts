@@ -23,7 +23,12 @@ function createMockSocket() {
     return true;
   };
 
-  return { socket, written, pushResponse: (data: string) => originalWrite(Buffer.from(data)) };
+  return {
+    socket,
+    written,
+    pushResponse: (data: string) => originalWrite(Buffer.from(data)),
+    endResponse: () => socket.end(),
+  };
 }
 
 describe("http1Request with ReadableStream body", () => {
@@ -201,5 +206,110 @@ describe("http1Request timeouts", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("http1Request response safeguards", () => {
+  it("should reject invalid Content-Length without throwing out of band", async () => {
+    const { socket, pushResponse } = createMockSocket();
+
+    const responsePromise = http1Request(socket, {
+      method: "GET",
+      path: "/invalid-content-length",
+      hostname: "example.com",
+      headers: {},
+    });
+
+    pushResponse("HTTP/1.1 200 OK\r\nContent-Length: 5x\r\n\r\nhello");
+
+    await expect(responsePromise).rejects.toThrow('Invalid Content-Length: "5x"');
+  });
+
+  it("should pause and resume the socket when the body stream applies backpressure", async () => {
+    const { socket, pushResponse } = createMockSocket();
+    const pauseSpy = vi.spyOn(socket, "pause");
+    const resumeSpy = vi.spyOn(socket, "resume");
+
+    const responsePromise = http1Request(socket, {
+      method: "GET",
+      path: "/backpressure",
+      hostname: "example.com",
+      headers: {},
+    });
+
+    pushResponse("HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n12345");
+    const response = await responsePromise;
+
+    expect(pauseSpy).toHaveBeenCalled();
+
+    const reader = response.body.getReader();
+    const first = await reader.read();
+    expect(Buffer.from(first.value!).toString()).toBe("12345");
+    expect(resumeSpy).toHaveBeenCalled();
+  });
+
+  it("should not timeout already queued body data while the socket is paused", async () => {
+    vi.useFakeTimers();
+    try {
+      const { socket, pushResponse } = createMockSocket();
+
+      const responsePromise = http1Request(socket, {
+        method: "GET",
+        path: "/backpressure-timeout",
+        hostname: "example.com",
+        headers: {},
+        bodyTimeout: 10,
+      });
+
+      pushResponse("HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n12345");
+      const response = await responsePromise;
+
+      await vi.advanceTimersByTimeAsync(20);
+
+      const reader = response.body.getReader();
+      const first = await reader.read();
+      expect(Buffer.from(first.value!).toString()).toBe("12345");
+      await reader.cancel();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("should ignore Content-Length bodies for HEAD responses", async () => {
+    const { socket, pushResponse, endResponse } = createMockSocket();
+
+    const responsePromise = http1Request(socket, {
+      method: "HEAD",
+      path: "/head",
+      hostname: "example.com",
+      headers: {},
+    });
+
+    pushResponse("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n");
+    const response = await responsePromise;
+    endResponse();
+
+    const reader = response.body.getReader();
+    const result = await reader.read();
+    expect(result.done).toBe(true);
+  });
+
+  it("should ignore transfer-encoding bodies for 304 responses", async () => {
+    const { socket, pushResponse, endResponse } = createMockSocket();
+
+    const responsePromise = http1Request(socket, {
+      method: "GET",
+      path: "/cached",
+      hostname: "example.com",
+      headers: {},
+    });
+
+    pushResponse("HTTP/1.1 304 Not Modified\r\nTransfer-Encoding: chunked\r\n\r\n");
+    const response = await responsePromise;
+    endResponse();
+
+    const reader = response.body.getReader();
+    const result = await reader.read();
+    expect(result.done).toBe(true);
   });
 });

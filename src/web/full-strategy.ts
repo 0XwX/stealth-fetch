@@ -117,6 +117,8 @@ export function createFullStrategy(wasmTransport: WasmTransport): InnerRequestFn
         method: options.method ?? "GET",
         path: parsed.path,
         hostname: parsed.hostname,
+        port: parsed.port,
+        protocol: parsed.protocol,
         headers: options.headers ?? {},
         body,
         signal,

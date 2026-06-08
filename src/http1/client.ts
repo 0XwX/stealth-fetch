@@ -116,7 +116,13 @@ export async function http1Request(socket: Duplex, request: Http1Request): Promi
   }
 
   // Read response
-  return readResponse(socket, request.signal, request.headersTimeout, request.bodyTimeout);
+  return readResponse(
+    socket,
+    request.method,
+    request.signal,
+    request.headersTimeout,
+    request.bodyTimeout,
+  );
 }
 
 function writeToSocket(socket: Duplex, data: Buffer): Promise<void> {
@@ -128,12 +134,27 @@ function writeToSocket(socket: Duplex, data: Buffer): Promise<void> {
   });
 }
 
+function applyNoBodyRule(response: ParsedResponse, requestMethod: string): ParsedResponse {
+  if (!mustIgnoreResponseBody(requestMethod, response.status)) return response;
+  return { ...response, bodyMode: "content-length", contentLength: 0 };
+}
+
+function mustIgnoreResponseBody(requestMethod: string, status: number): boolean {
+  return (
+    requestMethod.toUpperCase() === "HEAD" ||
+    (status >= 100 && status < 200) ||
+    status === 204 ||
+    status === 304
+  );
+}
+
 /**
  * Read and parse HTTP/1.1 response from socket.
  * Returns response with a streaming body.
  */
 function readResponse(
   socket: Duplex,
+  requestMethod: string,
   signal?: AbortSignal,
   headersTimeout?: number,
   bodyTimeout?: number,
@@ -152,18 +173,39 @@ function readResponse(
     // We'll create a ReadableStream for the body
     let bodyController: ReadableStreamDefaultController<Uint8Array> | null = null;
     let bodyStreamClosed = false;
+    let socketPaused = false;
 
     let headersTimer: ReturnType<typeof setTimeout> | null = null;
     let bodyTimer: ReturnType<typeof setTimeout> | null = null;
     let lastBodyActivity = 0;
 
+    const pauseSocket = () => {
+      if (!socketPaused && !bodyStreamClosed) {
+        socket.pause();
+        socketPaused = true;
+        clearBodyTimer();
+      }
+    };
+
+    const resumeSocket = () => {
+      if (socketPaused && !bodyStreamClosed) {
+        socketPaused = false;
+        markBodyActivity();
+        socket.resume();
+      }
+    };
+
     const bodyStream = new ReadableStream<Uint8Array>({
       start(controller) {
         bodyController = controller;
       },
+      pull() {
+        resumeSocket();
+      },
       cancel() {
         bodyStreamClosed = true;
         cleanup();
+        socket.destroy();
       },
     });
 
@@ -179,10 +221,25 @@ function readResponse(
       clearBodyTimer();
     };
 
+    const errorBody = (err: Error) => {
+      if (bodyController && !bodyStreamClosed) {
+        bodyStreamClosed = true;
+        try {
+          bodyController.error(err);
+        } catch {
+          // ignore if already closed
+        }
+      }
+      clearBodyTimer();
+    };
+
     const enqueueBody = (data: Uint8Array) => {
       if (bodyController && !bodyStreamClosed) {
         try {
           bodyController.enqueue(data);
+          if (bodyController.desiredSize !== null && bodyController.desiredSize <= 0) {
+            pauseSocket();
+          }
         } catch {
           // ignore if closed
         }
@@ -239,6 +296,7 @@ function readResponse(
     const onBodyTimeoutCheck = () => {
       bodyTimer = null;
       if (!hasBodyTimeout) return;
+      if (socketPaused) return;
       const elapsed = Date.now() - lastBodyActivity;
       if (elapsed >= bodyTimeout!) {
         const err = new DOMException(`Body timeout after ${bodyTimeout}ms`, "TimeoutError");
@@ -267,78 +325,93 @@ function readResponse(
     };
 
     const onData = (chunk: Buffer | Uint8Array) => {
-      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      try {
+        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
 
-      if (!headParsed) {
-        headBuffer = headBuffer.length > 0 ? Buffer.concat([headBuffer, buf]) : buf;
+        if (!headParsed) {
+          headBuffer = headBuffer.length > 0 ? Buffer.concat([headBuffer, buf]) : buf;
 
-        // Limit header size to 80KB to prevent memory exhaustion
-        if (headBuffer.length > 81920) {
-          reject(new Error("Response headers too large (>80KB)"));
-          cleanup();
-          return;
+          // Limit header size to 80KB to prevent memory exhaustion
+          if (headBuffer.length > 81920) {
+            reject(new Error("Response headers too large (>80KB)"));
+            cleanup();
+            return;
+          }
+
+          // Parse response head, looping to skip 1xx informational responses.
+          // A single TCP packet may contain "100 Continue\r\n\r\nHTTP/1.1 200 OK..."
+          // so we must keep parsing within the same data event.
+          let result = parseResponseHead(headBuffer);
+          if (!result) return; // need more data for headers
+
+          // Skip 1xx informational responses (RFC 7231 Section 6.2)
+          // 100 Continue, 102 Processing, 103 Early Hints — skip and wait for final response.
+          // 101 Switching Protocols is NOT skipped (Upgrade semantics, not supported — treat as final).
+          while (
+            result &&
+            result.response.status >= 100 &&
+            result.response.status < 200 &&
+            result.response.status !== 101
+          ) {
+            headBuffer = headBuffer.subarray(result.bodyStart);
+            result = parseResponseHead(headBuffer);
+          }
+          if (!result) return; // need more data for final response headers
+
+          headParsed = true;
+          const parsedResponse = applyNoBodyRule(result.response, requestMethod);
+          parsed = parsedResponse;
+          clearHeadersTimer();
+
+          // Resolve the promise with response (body streams separately)
+          resolve({
+            status: parsedResponse.status,
+            statusText: parsedResponse.statusText,
+            headers: parsedResponse.headers,
+            rawHeaders: parsedResponse.rawHeaders,
+            protocol: "http/1.1",
+            body: bodyStream,
+          });
+
+          // Process any body data that came with the headers
+          const bodyData = headBuffer.subarray(result.bodyStart);
+          headBuffer = Buffer.alloc(0); // free memory
+
+          if (parsedResponse.bodyMode === "chunked") {
+            chunkedDecoder = new ChunkedDecoder();
+          }
+
+          if (
+            hasBodyTimeout &&
+            !(parsedResponse.bodyMode === "content-length" && parsedResponse.contentLength === 0)
+          ) {
+            markBodyActivity();
+          }
+
+          if (
+            bodyData.length > 0 &&
+            !(parsedResponse.bodyMode === "content-length" && parsedResponse.contentLength === 0)
+          ) {
+            processBodyData(bodyData);
+          }
+
+          // Check if body is already complete (content-length: 0)
+          if (parsedResponse.bodyMode === "content-length" && parsedResponse.contentLength === 0) {
+            closeBody();
+            cleanup();
+          }
+        } else {
+          processBodyData(buf);
         }
-
-        // Parse response head, looping to skip 1xx informational responses.
-        // A single TCP packet may contain "100 Continue\r\n\r\nHTTP/1.1 200 OK..."
-        // so we must keep parsing within the same data event.
-        let result = parseResponseHead(headBuffer);
-        if (!result) return; // need more data for headers
-
-        // Skip 1xx informational responses (RFC 7231 Section 6.2)
-        // 100 Continue, 102 Processing, 103 Early Hints — skip and wait for final response.
-        // 101 Switching Protocols is NOT skipped (Upgrade semantics, not supported — treat as final).
-        while (
-          result &&
-          result.response.status >= 100 &&
-          result.response.status < 200 &&
-          result.response.status !== 101
-        ) {
-          headBuffer = headBuffer.subarray(result.bodyStart);
-          result = parseResponseHead(headBuffer);
+      } catch (err) {
+        const error = err instanceof Error ? err : new Error(String(err));
+        if (!headParsed) {
+          reject(error);
+        } else {
+          errorBody(error);
         }
-        if (!result) return; // need more data for final response headers
-
-        headParsed = true;
-        parsed = result.response;
-        clearHeadersTimer();
-
-        // Resolve the promise with response (body streams separately)
-        resolve({
-          status: parsed.status,
-          statusText: parsed.statusText,
-          headers: parsed.headers,
-          rawHeaders: parsed.rawHeaders,
-          protocol: "http/1.1",
-          body: bodyStream,
-        });
-
-        // Process any body data that came with the headers
-        const bodyData = headBuffer.subarray(result.bodyStart);
-        headBuffer = Buffer.alloc(0); // free memory
-
-        if (parsed.bodyMode === "chunked") {
-          chunkedDecoder = new ChunkedDecoder();
-        }
-
-        if (
-          hasBodyTimeout &&
-          !(parsed.bodyMode === "content-length" && parsed.contentLength === 0)
-        ) {
-          markBodyActivity();
-        }
-
-        if (bodyData.length > 0) {
-          processBodyData(bodyData);
-        }
-
-        // Check if body is already complete (content-length: 0)
-        if (parsed.bodyMode === "content-length" && parsed.contentLength === 0) {
-          closeBody();
-          cleanup();
-        }
-      } else {
-        processBodyData(buf);
+        cleanup();
+        socket.destroy();
       }
     };
 
@@ -381,24 +454,10 @@ function readResponse(
           const err = new Error(
             `Response body truncated: received ${bodyBytesReceived} of ${parsed.contentLength} bytes`,
           );
-          if (bodyController && !bodyStreamClosed) {
-            bodyStreamClosed = true;
-            try {
-              bodyController.error(err);
-            } catch {
-              /* ignore */
-            }
-          }
+          errorBody(err);
         } else if (parsed.bodyMode === "chunked" && chunkedDecoder && !chunkedDecoder.done) {
           const err = new Error("Response body truncated: chunked encoding not terminated");
-          if (bodyController && !bodyStreamClosed) {
-            bodyStreamClosed = true;
-            try {
-              bodyController.error(err);
-            } catch {
-              /* ignore */
-            }
-          }
+          errorBody(err);
         } else {
           closeBody();
         }
@@ -412,14 +471,7 @@ function readResponse(
       if (!headParsed) {
         reject(err);
       } else {
-        if (bodyController && !bodyStreamClosed) {
-          bodyStreamClosed = true;
-          try {
-            bodyController.error(err);
-          } catch {
-            // ignore
-          }
-        }
+        errorBody(err);
       }
       cleanup();
     };

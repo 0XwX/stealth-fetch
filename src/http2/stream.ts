@@ -7,6 +7,8 @@ import { EventEmitter } from "node:events";
 import { ErrorCode } from "./constants.js";
 import { FlowControlWindow } from "./flow-control.js";
 
+const MAX_QUEUED_BODY_BYTES = 8 * 1024 * 1024;
+
 /** Stream states (RFC 7540 Section 5.1) */
 export type StreamState = "idle" | "open" | "half-closed-local" | "half-closed-remote" | "closed";
 
@@ -56,18 +58,24 @@ export class Http2Stream extends EventEmitter {
     this.sendWindow = new FlowControlWindow(initialSendWindowSize);
     this.recvWindowSize = recvWindowSize;
 
-    this.body = new ReadableStream<Uint8Array>({
-      start: controller => {
-        this.bodyController = controller;
+    this.body = new ReadableStream<Uint8Array>(
+      {
+        start: controller => {
+          this.bodyController = controller;
+        },
+        cancel: () => {
+          this.bodyStreamClosed = true;
+          // Notify connection to send RST_STREAM(CANCEL) so server stops sending
+          if (this._state !== "closed" && this.onBodyCancel) {
+            this.onBodyCancel(this.id);
+          }
+        },
       },
-      cancel: () => {
-        this.bodyStreamClosed = true;
-        // Notify connection to send RST_STREAM(CANCEL) so server stops sending
-        if (this._state !== "closed" && this.onBodyCancel) {
-          this.onBodyCancel(this.id);
-        }
+      {
+        highWaterMark: MAX_QUEUED_BODY_BYTES,
+        size: chunk => chunk.byteLength,
       },
-    });
+    );
   }
 
   get state(): StreamState {
@@ -150,6 +158,14 @@ export class Http2Stream extends EventEmitter {
   /** Handle received DATA frame */
   handleData(data: Buffer, endStream: boolean): void {
     if (this.bodyController && !this.bodyStreamClosed) {
+      const desiredSize = this.bodyController.desiredSize;
+      if (desiredSize !== null && desiredSize < data.byteLength) {
+        const err = new Error(`HTTP/2 response body queue exceeded ${MAX_QUEUED_BODY_BYTES} bytes`);
+        this.onSendRst?.(this.id, ErrorCode.ENHANCE_YOUR_CALM);
+        this.closeBodyWithError(err);
+        this.close();
+        return;
+      }
       try {
         // data is already a copied buffer from the parser; safe to enqueue directly
         this.bodyController.enqueue(data);

@@ -18,14 +18,22 @@ const enum ChunkedState {
   DONE,
 }
 
+const MAX_CHUNK_SIZE = 16 * 1024 * 1024;
+const MAX_SIZE_LINE_LENGTH = 8192;
+
 /**
  * Stateful chunked transfer encoding decoder.
  * Feed raw data via feed(), collect decoded chunks via getChunks().
  */
 export class ChunkedDecoder {
   private state: ChunkedState = ChunkedState.READ_SIZE;
-  private buffer: Buffer = Buffer.alloc(0);
-  private currentChunkSize = 0;
+  private buffers: Buffer[] = [];
+  private bufferOffset = 0;
+  private bufferedBytes = 0;
+  private sizeLineBytes: number[] = [];
+  private sawSizeLineCR = false;
+  private currentChunkRemaining = 0;
+  private dataCrlfBytesRead = 0;
   private chunks: Buffer[] = [];
   private _done = false;
 
@@ -37,7 +45,9 @@ export class ChunkedDecoder {
   /** Feed raw data into the decoder */
   feed(data: Buffer | Uint8Array): void {
     const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
-    this.buffer = this.buffer.length > 0 ? Buffer.concat([this.buffer, buf]) : buf;
+    if (buf.length === 0) return;
+    this.buffers.push(buf);
+    this.bufferedBytes += buf.length;
     this.process();
   }
 
@@ -49,52 +59,27 @@ export class ChunkedDecoder {
   }
 
   private process(): void {
-    while (this.buffer.length > 0 && !this._done) {
+    while (this.bufferedBytes > 0 && !this._done) {
       switch (this.state) {
         case ChunkedState.READ_SIZE: {
-          const crlfIdx = this.findCRLF();
-          if (crlfIdx === -1) return; // need more data
-
-          const sizeLine = this.buffer.subarray(0, crlfIdx).toString("ascii");
-          // Chunk size may have extensions after ";", ignore them
-          const semiIdx = sizeLine.indexOf(";");
-          const sizeStr = semiIdx === -1 ? sizeLine : sizeLine.substring(0, semiIdx);
-          this.currentChunkSize = parseInt(sizeStr.trim(), 16);
-
-          if (isNaN(this.currentChunkSize) || this.currentChunkSize < 0) {
-            throw new Error(`Invalid chunk size: "${sizeStr.trim()}"`);
-          }
-          if (this.currentChunkSize > 16 * 1024 * 1024) {
-            throw new Error(`Chunk size too large: ${this.currentChunkSize}`);
-          }
-
-          this.buffer = this.buffer.subarray(crlfIdx + 2);
-
-          if (this.currentChunkSize === 0) {
-            this._done = true;
-            return;
-          }
-
-          this.state = ChunkedState.READ_DATA;
+          if (!this.readSizeLine()) return;
           break;
         }
 
         case ChunkedState.READ_DATA: {
-          if (this.buffer.length < this.currentChunkSize) return; // need more data
-
-          this.chunks.push(this.buffer.subarray(0, this.currentChunkSize));
-          this.buffer = this.buffer.subarray(this.currentChunkSize);
+          while (this.currentChunkRemaining > 0 && this.bufferedBytes > 0) {
+            const chunk = this.takeBytes(Math.min(this.currentChunkRemaining, this.bufferedBytes));
+            this.currentChunkRemaining -= chunk.length;
+            this.chunks.push(chunk);
+          }
+          if (this.currentChunkRemaining > 0) return;
           this.state = ChunkedState.READ_DATA_CRLF;
+          this.dataCrlfBytesRead = 0;
           break;
         }
 
         case ChunkedState.READ_DATA_CRLF: {
-          if (this.buffer.length < 2) return; // need \r\n
-          if (this.buffer[0] !== 0x0d || this.buffer[1] !== 0x0a) {
-            throw new Error("Expected CRLF after chunk data");
-          }
-          this.buffer = this.buffer.subarray(2);
-          this.state = ChunkedState.READ_SIZE;
+          if (!this.readDataCRLF()) return;
           break;
         }
 
@@ -104,12 +89,86 @@ export class ChunkedDecoder {
     }
   }
 
-  private findCRLF(): number {
-    for (let i = 0; i < this.buffer.length - 1; i++) {
-      if (this.buffer[i] === 0x0d && this.buffer[i + 1] === 0x0a) {
-        return i;
+  private readSizeLine(): boolean {
+    while (this.bufferedBytes > 0) {
+      const byte = this.takeByte();
+      if (this.sawSizeLineCR) {
+        if (byte !== 0x0a) {
+          throw new Error("Expected LF after chunk size CR");
+        }
+        this.sawSizeLineCR = false;
+        this.parseSizeLine();
+        return true;
+      }
+      if (byte === 0x0d) {
+        this.sawSizeLineCR = true;
+        continue;
+      }
+      this.sizeLineBytes.push(byte);
+      if (this.sizeLineBytes.length > MAX_SIZE_LINE_LENGTH) {
+        throw new Error("Chunk size line too large");
       }
     }
-    return -1;
+    return false;
+  }
+
+  private parseSizeLine(): void {
+    const sizeLine = Buffer.from(this.sizeLineBytes).toString("ascii");
+    this.sizeLineBytes = [];
+    const semiIdx = sizeLine.indexOf(";");
+    const sizeStr = (semiIdx === -1 ? sizeLine : sizeLine.substring(0, semiIdx)).trim();
+
+    if (!/^[0-9a-fA-F]+$/.test(sizeStr)) {
+      throw new Error(`Invalid chunk size: "${sizeStr}"`);
+    }
+    const chunkSize = parseInt(sizeStr, 16);
+    if (chunkSize > MAX_CHUNK_SIZE) {
+      throw new Error(`Chunk size too large: ${chunkSize}`);
+    }
+    if (chunkSize === 0) {
+      this._done = true;
+      this.state = ChunkedState.DONE;
+      return;
+    }
+    this.currentChunkRemaining = chunkSize;
+    this.state = ChunkedState.READ_DATA;
+  }
+
+  private readDataCRLF(): boolean {
+    while (this.dataCrlfBytesRead < 2 && this.bufferedBytes > 0) {
+      const expected = this.dataCrlfBytesRead === 0 ? 0x0d : 0x0a;
+      if (this.takeByte() !== expected) {
+        throw new Error("Expected CRLF after chunk data");
+      }
+      this.dataCrlfBytesRead++;
+    }
+    if (this.dataCrlfBytesRead < 2) return false;
+    this.state = ChunkedState.READ_SIZE;
+    return true;
+  }
+
+  private takeByte(): number {
+    const head = this.buffers[0]!;
+    const byte = head[this.bufferOffset++];
+    this.bufferedBytes--;
+    if (this.bufferOffset === head.length) {
+      this.buffers.shift();
+      this.bufferOffset = 0;
+    }
+    return byte;
+  }
+
+  private takeBytes(length: number): Buffer {
+    const head = this.buffers[0]!;
+    const available = head.length - this.bufferOffset;
+    const take = Math.min(length, available);
+    const chunk = head.subarray(this.bufferOffset, this.bufferOffset + take);
+    this.bufferOffset += take;
+    this.bufferedBytes -= take;
+    if (this.bufferOffset === head.length) {
+      this.buffers.shift();
+      this.bufferOffset = 0;
+    }
+    return chunk;
   }
 }

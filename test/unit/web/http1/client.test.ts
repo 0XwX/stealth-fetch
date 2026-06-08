@@ -150,6 +150,34 @@ describe("http1Request (web/RawSocket) with ReadableStream body", () => {
 });
 
 describe("http1Request (web/RawSocket) response reading", () => {
+  it("should include non-default ports in the Host header", async () => {
+    const { socket, written, pushData } = createMockRawSocket();
+
+    const responsePromise = http1Request(socket, {
+      method: "GET",
+      path: "/test",
+      hostname: "example.com",
+      port: 8443,
+      protocol: "https",
+      headers: {},
+    });
+
+    pushData("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+    await responsePromise;
+
+    const allWritten = dec.decode(
+      new Uint8Array(
+        written.reduce((acc, chunk) => {
+          const merged = new Uint8Array(acc.length + chunk.length);
+          merged.set(acc);
+          merged.set(chunk, acc.length);
+          return merged;
+        }, new Uint8Array(0)),
+      ),
+    );
+    expect(allWritten).toContain("host: example.com:8443");
+  });
+
   it("should read content-length response body", async () => {
     const { socket, pushData } = createMockRawSocket();
 
@@ -217,6 +245,44 @@ describe("http1Request (web/RawSocket) response reading", () => {
 
     const final = await reader.read();
     expect(final.done).toBe(true);
+  });
+
+  it("should ignore Content-Length bodies for HEAD responses", async () => {
+    const { socket, pushData, pushDone } = createMockRawSocket();
+
+    const responsePromise = http1Request(socket, {
+      method: "HEAD",
+      path: "/head",
+      hostname: "example.com",
+      headers: {},
+    });
+
+    pushData("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n");
+    const response = await responsePromise;
+    pushDone();
+
+    const reader = response.body.getReader();
+    const result = await reader.read();
+    expect(result.done).toBe(true);
+  });
+
+  it("should ignore transfer-encoding bodies for 304 responses", async () => {
+    const { socket, pushData, pushDone } = createMockRawSocket();
+
+    const responsePromise = http1Request(socket, {
+      method: "GET",
+      path: "/cached",
+      hostname: "example.com",
+      headers: {},
+    });
+
+    pushData("HTTP/1.1 304 Not Modified\r\nTransfer-Encoding: chunked\r\n\r\n");
+    const response = await responsePromise;
+    pushDone();
+
+    const reader = response.body.getReader();
+    const result = await reader.read();
+    expect(result.done).toBe(true);
   });
 });
 

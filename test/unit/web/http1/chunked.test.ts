@@ -30,13 +30,25 @@ describe("ChunkedDecoder (web/Uint8Array)", () => {
     const decoder = new ChunkedDecoder();
 
     decoder.feed(enc.encode("5\r\nhel"));
-    expect(decoder.getChunks().length).toBe(0);
+    expect(decoder.getChunks().map(c => dec.decode(c))).toEqual(["hel"]);
     expect(decoder.done).toBe(false);
 
     decoder.feed(enc.encode("lo\r\n0\r\n\r\n"));
     const chunks = decoder.getChunks();
     expect(chunks.length).toBe(1);
-    expect(dec.decode(chunks[0])).toBe("hello");
+    expect(dec.decode(chunks[0])).toBe("lo");
+    expect(decoder.done).toBe(true);
+  });
+
+  it("should emit partial data before a large chunk is complete", () => {
+    const decoder = new ChunkedDecoder();
+
+    decoder.feed(enc.encode("a\r\n12345"));
+    expect(decoder.getChunks().map(c => dec.decode(c))).toEqual(["12345"]);
+    expect(decoder.done).toBe(false);
+
+    decoder.feed(enc.encode("67890\r\n0\r\n\r\n"));
+    expect(decoder.getChunks().map(c => dec.decode(c))).toEqual(["67890"]);
     expect(decoder.done).toBe(true);
   });
 

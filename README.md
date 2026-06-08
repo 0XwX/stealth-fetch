@@ -135,6 +135,13 @@ interface HttpResponse {
 }
 ```
 
+Response bodies are streaming. If you do not read the body to completion,
+release it explicitly: call `await response.close()` on the main `stealth-fetch`
+entry, or `await response.body.cancel()` on `/web` and `/lite`. `bodyTimeout`
+measures idle network reads; once backpressure pauses the socket for a slow or
+stalled consumer, use `signal`/abort or explicit cancellation to bound that
+lifecycle.
+
 ### `toWebResponse(response, options?)`
 
 Converts `HttpResponse` to a standard Web `Response`. Pass `{ tee: true }` to

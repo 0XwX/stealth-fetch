@@ -61,7 +61,10 @@ export class WasmTlsSocketAdapter extends Duplex {
     // 3. Wire up callbacks: TLS plaintext -> Duplex readable side
     this.tlsSession.onPlaintext(data => {
       if (!this.destroyed) {
-        this.push(data);
+        const canContinue = this.push(data);
+        if (!canContinue) {
+          this.rawSocket?.pause();
+        }
       }
     });
 
@@ -90,7 +93,7 @@ export class WasmTlsSocketAdapter extends Duplex {
   }
 
   _read(): void {
-    // Data is pushed via onPlaintext callback, no active pulling needed
+    this.rawSocket?.resume();
   }
 
   _write(

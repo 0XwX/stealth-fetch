@@ -4,6 +4,7 @@
 import { concatBytes, encode } from "../bytes.js";
 import type { RawSocket } from "../raw-socket.js";
 import { serializeHttp1Headers, validateMethod, validatePath } from "../../utils/headers.js";
+import { hostWithPort } from "../../utils/url.js";
 import { parseResponseHead, type ParsedResponse } from "./parser.js";
 import { ChunkedDecoder } from "./chunked.js";
 
@@ -11,6 +12,8 @@ export interface Http1Request {
   method: string;
   path: string;
   hostname: string;
+  port?: number;
+  protocol?: "https" | "http";
   headers: Record<string, string>;
   body?: Uint8Array | ReadableStream<Uint8Array> | null;
   signal?: AbortSignal;
@@ -44,7 +47,9 @@ export async function http1Request(
   // Build request headers
   const reqHeaders = { ...request.headers };
   if (!reqHeaders["host"]) {
-    reqHeaders["host"] = request.hostname;
+    const proto = request.protocol ?? "https";
+    const port = request.port ?? (proto === "https" ? 443 : 80);
+    reqHeaders["host"] = hostWithPort(request.hostname, port, proto);
   }
   if (!reqHeaders["connection"]) {
     reqHeaders["connection"] = "close";
@@ -97,7 +102,13 @@ export async function http1Request(
   }
 
   // Read response
-  return readResponse(socket, request.signal, request.headersTimeout, request.bodyTimeout);
+  return readResponse(
+    socket,
+    request.method,
+    request.signal,
+    request.headersTimeout,
+    request.bodyTimeout,
+  );
 }
 
 /**
@@ -105,6 +116,7 @@ export async function http1Request(
  */
 async function readResponse(
   socket: RawSocket,
+  requestMethod: string,
   signal?: AbortSignal,
   headersTimeout?: number,
   bodyTimeout?: number,
@@ -143,17 +155,25 @@ async function readResponse(
       throw new Error("Response headers too large (>80KB)");
     }
 
-    const result = parseResponseHead(headBuffer);
+    let result = parseResponseHead(headBuffer);
     if (!result) continue;
 
-    // Skip 100 Continue
-    if (result.response.status === 100) {
+    while (
+      result &&
+      result.response.status >= 100 &&
+      result.response.status < 200 &&
+      result.response.status !== 101
+    ) {
       headBuffer = headBuffer.subarray(result.bodyStart);
-      continue;
+      result = parseResponseHead(headBuffer);
     }
+    if (!result) continue;
 
-    parsed = result.response;
-    bodyStartData = headBuffer.subarray(result.bodyStart);
+    parsed = applyNoBodyRule(result.response, requestMethod);
+    bodyStartData =
+      parsed.bodyMode === "content-length" && parsed.contentLength === 0
+        ? new Uint8Array(0)
+        : headBuffer.subarray(result.bodyStart);
     break;
   }
 
@@ -168,6 +188,20 @@ async function readResponse(
     protocol: "http/1.1",
     body: bodyStream,
   };
+}
+
+function applyNoBodyRule(response: ParsedResponse, requestMethod: string): ParsedResponse {
+  if (!mustIgnoreResponseBody(requestMethod, response.status)) return response;
+  return { ...response, bodyMode: "content-length", contentLength: 0 };
+}
+
+function mustIgnoreResponseBody(requestMethod: string, status: number): boolean {
+  return (
+    requestMethod.toUpperCase() === "HEAD" ||
+    (status >= 100 && status < 200) ||
+    status === 204 ||
+    status === 304
+  );
 }
 
 function createBodyStream(

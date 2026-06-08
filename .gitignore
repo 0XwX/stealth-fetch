@@ -3,6 +3,8 @@ node_modules/
 
 # Build output
 dist/
+!test/dist/
+!test/dist/**
 
 # Coverage
 coverage/

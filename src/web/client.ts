@@ -3,7 +3,7 @@
  * No DoH, no NAT64, no WASM dependencies.
  * Strategy for single-request dispatch is injected via InnerRequestFn.
  */
-import { parseUrl, type ParsedUrl } from "../utils/url.js";
+import { hostWithPort, parseUrl, type ParsedUrl } from "../utils/url.js";
 import { normalizeHeaders, type HeaderInput } from "../utils/headers.js";
 import {
   type NormalizedOptions,
@@ -177,11 +177,9 @@ export function createRequestFn(
       }
 
       if (isOriginChange(parsed, newParsed)) {
-        delete currentHeaders["authorization"];
-        delete currentHeaders["cookie"];
-        delete currentHeaders["proxy-authorization"];
+        stripSensitiveRedirectHeaders(currentHeaders);
       }
-      currentHeaders["host"] = newParsed.hostname;
+      currentHeaders["host"] = hostWithPort(newParsed.hostname, newParsed.port, newParsed.protocol);
       currentUrl = resolvedUrl;
     }
   }
@@ -304,3 +302,18 @@ export function calculateRetryDelay(
   }
   return Math.min(config.baseDelay * 2 ** attempt, config.maxDelay);
 }
+
+function stripSensitiveRedirectHeaders(headers: Record<string, string>): void {
+  for (const name of SENSITIVE_REDIRECT_HEADERS) {
+    delete headers[name];
+  }
+}
+
+const SENSITIVE_REDIRECT_HEADERS = [
+  "authorization",
+  "cookie",
+  "proxy-authorization",
+  "x-api-key",
+  "api-key",
+  "x-auth-token",
+];

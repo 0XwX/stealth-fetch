@@ -31,6 +31,19 @@ describe("HTTP/1.1 Response Parser", () => {
     expect(result!.response.bodyMode).toBe("chunked");
   });
 
+  it("should hide Content-Length when Transfer-Encoding is present", () => {
+    const raw = Buffer.from(
+      "HTTP/1.1 200 OK\r\n" + "Transfer-Encoding: chunked\r\n" + "Content-Length: 999\r\n" + "\r\n",
+    );
+
+    const result = parseResponseHead(raw);
+    expect(result).not.toBeNull();
+    expect(result!.response.bodyMode).toBe("chunked");
+    expect(result!.response.contentLength).toBe(0);
+    expect(result!.response.headers["content-length"]).toBeUndefined();
+    expect(result!.response.rawHeaders).toContainEqual(["content-length", "999"]);
+  });
+
   it("should parse response without Content-Length as close mode", () => {
     const raw = Buffer.from("HTTP/1.1 200 OK\r\n" + "Content-Type: text/plain\r\n" + "\r\n");
 
@@ -74,6 +87,48 @@ describe("HTTP/1.1 Response Parser", () => {
     const result = parseResponseHead(raw);
     expect(result).not.toBeNull();
     expect(result!.response.headers["set-cookie"]).toBe("a=1\nb=2");
+  });
+
+  it("should accept repeated identical Content-Length values", () => {
+    const raw = Buffer.from(
+      "HTTP/1.1 200 OK\r\n" + "Content-Length: 5\r\n" + "Content-Length: 5\r\n" + "\r\nhello",
+    );
+
+    const result = parseResponseHead(raw);
+    expect(result).not.toBeNull();
+    expect(result!.response.headers["content-length"]).toBe("5");
+    expect(result!.response.contentLength).toBe(5);
+  });
+
+  it("should accept comma-joined identical Content-Length values", () => {
+    const raw = Buffer.from("HTTP/1.1 200 OK\r\nContent-Length: 5, 5\r\n\r\nhello");
+
+    const result = parseResponseHead(raw);
+    expect(result).not.toBeNull();
+    expect(result!.response.headers["content-length"]).toBe("5");
+    expect(result!.response.contentLength).toBe(5);
+  });
+
+  it("should reject conflicting Content-Length values", () => {
+    const raw = Buffer.from(
+      "HTTP/1.1 200 OK\r\n" + "Content-Length: 5\r\n" + "Content-Length: 6\r\n" + "\r\nhello",
+    );
+
+    expect(() => parseResponseHead(raw)).toThrow("Conflicting Content-Length");
+  });
+
+  it("should reject invalid Content-Length values", () => {
+    const raw = Buffer.from("HTTP/1.1 200 OK\r\nContent-Length: 5x\r\n\r\nhello");
+
+    expect(() => parseResponseHead(raw)).toThrow('Invalid Content-Length: "5x"');
+  });
+
+  it("should reject invalid Content-Length values even with Transfer-Encoding", () => {
+    const raw = Buffer.from(
+      "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 5x\r\n\r\n",
+    );
+
+    expect(() => parseResponseHead(raw)).toThrow('Invalid Content-Length: "5x"');
   });
 
   it("should correctly identify body start position", () => {

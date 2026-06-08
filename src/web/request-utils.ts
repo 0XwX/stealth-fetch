@@ -58,6 +58,8 @@ export async function h1RequestDirect(
       method: options.method ?? "GET",
       path: parsed.path,
       hostname: parsed.hostname,
+      port: parsed.port,
+      protocol: parsed.protocol,
       headers: options.headers ?? {},
       body,
       signal,
